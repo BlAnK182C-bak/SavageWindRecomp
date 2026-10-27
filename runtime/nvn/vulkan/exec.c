@@ -1131,6 +1131,7 @@ static void feedback_layout_move(VkCommandBuffer cb, TexBackend *b, bool to_loop
     b->in_feedback_layout = to_loop;
 }
 
+static void block_decode(VkCommandBuffer cb, TexBackend *b);
 static void vk_end_pass_at(int line);
 void vk_end_pass(void) { vk_end_pass_at(0); }
 #define vk_end_pass() vk_end_pass_at(__LINE__)
@@ -1142,7 +1143,9 @@ static void vk_end_pass_at(int line) {
     pass_void = false;
     for (int i = 0; i < pass_nfbl; i++) feedback_layout_move(vk_cmd(), pass_fbl[i], false);
     pass_nfbl = 0;
-    for (int i = 0; i < pass_nblock; i++) vk_block_flush(vk_cmd(), pass_block[i]);
+    for (int i = 0; i < pass_nblock; i++)
+        if (pass_block[i]->dec_kind) block_decode(vk_cmd(), pass_block[i]);
+        else vk_block_flush(vk_cmd(), pass_block[i]);
     pass_nblock = 0;
     for (int i = 0; i < pass_nlinear; i++) readback_schedule(vk_cmd(), pass_linear[i], &pass_linear_view[i], pass_linear_has_view[i]);
     pass_nlinear = 0;
@@ -5794,6 +5797,17 @@ static void post_pass_pc(VkCommandBuffer cb, const char *fs, const VkImageView *
 static void post_pass(VkCommandBuffer cb, const char *fs, const VkImageView *srcs, int n, TexBackend *dst, const float pc[8],
                       bool clear) {
     post_pass_pc(cb, fs, srcs, n, dst, pc, 32, clear);
+}
+
+// The BC4 blocks a pass drew into a CPU-decoded image (textures.c vk_view: into b->block, a texel a block), decoded
+// into its level 0: the GPU has no BC image to copy them into (vk_block_flush)
+static void block_decode(VkCommandBuffer cb, TexBackend *b) {
+    TexBackend *s = b->block;
+    if (!s) return;
+    VkImageView v = post_view(s);
+    float pc[8] = {s->format == VK_FORMAT_R16G16B16A16_UINT};
+    post_pass(cb, "bc4_decode.frag", &v, 1, b, pc, false);
+    vk_full_barrier(cb);
 }
 
 // The view the present samples: the game image, or its anti-aliased / upscaled version. ow x oh: the whole image's

@@ -1190,7 +1190,14 @@ static void pt_retire(void) {
     pthread_mutex_unlock(&pt_m);
 }
 
-static void recreate_swapchain(void) {
+static int sc_win_w, sc_win_h;  // the window's size the swapchain was made for (its surface's can differ: Android)
+
+static void recreate_swapchain(const char *why) {
+    static int n;
+    int w, h;
+    SDL_GetWindowSizeInPixels(window, &w, &h);
+    if (n++ < 20) LOG("[vk] swapchain made again: %s (window %dx%d, swapchain %ux%u)\n", why, w, h,
+                      g_vk.sc_extent.width, g_vk.sc_extent.height);
     vk_present_idle();
     pt_retire();
     vkDeviceWaitIdle(g_vk.dev);
@@ -1420,9 +1427,15 @@ bool vk_frame_begin(const float clear[4]) {
     float white;  // (Windows HDR turned on or off, the window moved to another display, Video > HDR changed)
     bool hdr = hdr_wanted(&white);
     if (g_hdr) g_hdr_white = white;
-    if (!g_vk.swapchain || (uint32_t)w != g_vk.sc_extent.width || (uint32_t)h != g_vk.sc_extent.height ||
-        atomic_exchange(&pres_stale, 0) || g_vk.sc_mode != wanted_present_mode() || hdr != (g_hdr || hdr_failed))
-        recreate_swapchain();
+    // (against the window's size it was made for, not its extent: a surface whose size isn't the window's - Android,
+    // the system bars - made it again on every frame)
+    const char *why = !g_vk.swapchain ? "none" : w != sc_win_w || h != sc_win_h ? "window size"
+                    : atomic_exchange(&pres_stale, 0) ? "a present said out of date"
+                    : g_vk.sc_mode != wanted_present_mode() ? "VSync" : hdr != (g_hdr || hdr_failed) ? "HDR" : NULL;
+    if (why) {
+        recreate_swapchain(why);
+        sc_win_w = w, sc_win_h = h;
+    }
     if (!g_vk.swapchain) return false;
     static int trace = -1;
     if (trace < 0) trace = getenv("SAVAGEWIND_VK_TRACE") != NULL;
@@ -1436,7 +1449,7 @@ bool vk_frame_begin(const float clear[4]) {
     VkResult r = acquire_image(acquire_sem[slot], &cur_frame.image);
     g_present_split[0] += SDL_GetTicksNS() - ta;
     if (r == VK_ERROR_OUT_OF_DATE_KHR) {
-        recreate_swapchain();
+        recreate_swapchain("an acquire said out of date");
         r = acquire_image(acquire_sem[slot], &cur_frame.image);
     }
     if (r != VK_SUCCESS && r != VK_SUBOPTIMAL_KHR) {
@@ -1515,7 +1528,7 @@ void vk_frame_end(const char *shot_path) {
     vk_submit_extra(cur_frame.acquired, done_sem[img], VK_NULL_HANDLE);
     g_present_split[3] += SDL_GetTicksNS() - ts;
     ts = SDL_GetTicksNS();
-    if (!present_image(img, done_sem[img], frame_kind, seq)) recreate_swapchain();
+    if (!present_image(img, done_sem[img], frame_kind, seq)) recreate_swapchain("a present said out of date");
     frame_kind = PRES_PLAIN;
     g_present_split[4] += SDL_GetTicksNS() - ts;
     cur_frame.ok = false;
@@ -1952,6 +1965,7 @@ void ui_window_init(void) {
     pick_device();
     create_device();
     create_swapchain();
+    SDL_GetWindowSizeInPixels(window, &sc_win_w, &sc_win_h);
     vk_exec_init();
     vk_shaders_init();
 }

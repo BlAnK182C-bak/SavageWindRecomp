@@ -866,6 +866,28 @@ static const char *builtin_src(const char *name, int *stage) {
         *stage = STAGE_FRAGMENT;
         return "#version 450\nvoid main() {}\n";
     }
+    // BC4 blocks the game drew (exec.c block_decode: a texel a 4x4 block, its 8 bytes as RGBA16UI when pc.a.x > 0.5,
+    // else RG32UI) decoded into the texels of a CPU-decoded image (R8): two endpoints, then a 3-bit index a texel from
+    // bit 16 on, row by row
+    if (!strcmp(name, "bc4_decode.frag")) {
+        *stage = STAGE_FRAGMENT;
+        return "#version 450\n"
+               "layout(set = 0, binding = 0) uniform usampler2D blocks;\n"
+               "layout(push_constant) uniform P { vec4 a; vec4 b; } pc;\n"
+               "layout(location = 0) out vec4 o;\n"
+               "void main() {\n"
+               "  ivec2 p = ivec2(gl_FragCoord.xy);\n"
+               "  uvec4 t = texelFetch(blocks, p >> 2, 0);\n"
+               "  uvec2 w = pc.a.x > 0.5 ? uvec2(t.x | (t.y << 16), t.z | (t.w << 16)) : t.xy;\n"
+               "  float r0 = float(w.x & 0xFFu) / 255.0, r1 = float((w.x >> 8) & 0xFFu) / 255.0;\n"
+               "  uint at = 16u + 3u * uint((p.y & 3) * 4 + (p.x & 3));\n"
+               "  uint k = (at >= 32u ? w.y >> (at - 32u) : at > 29u ? (w.x >> at) | (w.y << (32u - at)) : w.x >> at) & 7u;\n"
+               "  float v = k == 0u ? r0 : k == 1u ? r1\n"
+               "          : r0 > r1 ? (float(8u - k) * r0 + float(k - 1u) * r1) / 7.0\n"
+               "          : k == 6u ? 0.0 : k == 7u ? 1.0 : (float(6u - k) * r0 + float(k - 1u) * r1) / 5.0;\n"
+               "  o = vec4(v, 0.0, 0.0, 1.0);\n"
+               "}\n";
+    }
     return NULL;
 }
 

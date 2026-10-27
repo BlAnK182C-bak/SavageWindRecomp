@@ -1340,8 +1340,13 @@ VkImageView vk_view(NvnTexture *t, const NvnTextureView *v, bool has_view, bool 
         if (vk_format(t->format) == b->format) fmt = vf;  // (fallback images keep their own format)
         else if (render && b->dec_kind && !is_bc(vf) && vf != b->format) {
             // A CPU-decoded image has no blocks to draw into (block_view: BOTW encodes NPC speech bubbles to BC4 on
-            // the GPU through an RG32 view). Views of it, in a compressed format or not, otherwise keep its decoded
-            // format (a compressed one would be invalid on an uncompressed image).
+            // the GPU through an 8-byte view, RGBA16UI). BC4's go into its block image all the same, decoded after the
+            // pass (exec.c block_decode); others are skipped. Views of it, in a compressed format or not, otherwise
+            // keep its decoded format (a compressed one would be invalid on an uncompressed image).
+            if (b->dec_kind == DEC_BC && b->dec_bc == BCD_BC4 && !b->dec_flag && b->format == VK_FORMAT_R8_UNORM &&
+                (vf == VK_FORMAT_R16G16B16A16_UINT || vf == VK_FORMAT_R32G32_UINT) && !((v->setmask & 1) && v->base_level) &&
+                b->layers == 1 && b->depth == 1)
+                return block_view(b, vf);
             static int nlog;
             if (!nlog++) LOG("[vk] draw into the blocks of a CPU-decoded texture skipped (nvn %#x, view %#x)\n", t->format, v->format);
             return VK_NULL_HANDLE;
