@@ -1558,7 +1558,9 @@ extern "C" void launcher_run(const char *root, int mode) {
 #elif defined(__APPLE__)
                     ImGui::TextDisabled("%s", tr("To change settings or the game files later, hold Option while you open Savage Wind."));
 #else
+#ifndef __ANDROID__  // (Android always opens on the start screen)
                     ImGui::TextDisabled("%s", tr("To change settings or the game files later, start Savage Wind with --config."));
+#endif
 #endif
                     ImGui::PopTextWrapPos();
                 }

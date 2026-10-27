@@ -13,6 +13,8 @@ import android.provider.Settings;
 import org.libsdl.app.SDLActivity;
 
 public class SavageWindActivity extends SDLActivity {
+    private boolean asked;  // (asked in this run: the runtime may have chosen its data folder without the permission)
+
     @Override protected String[] getLibraries() { return new String[] {"SDL3", "main"}; }
 
     @Override protected void onCreate(Bundle state) {
@@ -20,8 +22,18 @@ public class SavageWindActivity extends SDLActivity {
         SharedPreferences p = getPreferences(MODE_PRIVATE);
         if (!Environment.isExternalStorageManager() && !p.getBoolean("asked_files", false)) {
             p.edit().putBoolean("asked_files", true).apply();
+            asked = true;
             startActivity(new Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION,
                                      Uri.parse("package:" + getPackageName())));
+        }
+    }
+
+    // back with the permission: start again, for the data folder to be /sdcard/SavageWind
+    @Override protected void onResume() {
+        super.onResume();
+        if (asked && Environment.isExternalStorageManager()) {
+            startActivity(Intent.makeRestartActivityTask(getComponentName()));
+            android.os.Process.killProcess(android.os.Process.myPid());
         }
     }
 }

@@ -1001,7 +1001,13 @@ static void create_swapchain(void) {
     LOG("[vk] swapchain %ux%u, %u images, present mode %s (VSync %s; surface has %s), %s, display %.2f Hz\n",
         ext.width, ext.height, count, present_mode_name(mode), present_mode_name(wanted_present_mode()), modes, kind,
         winsize_refresh_rate());
-    VK_CHECK(vkCreateSwapchainKHR(g_vk.dev, &ci, NULL, &g_vk.swapchain));
+    VkResult made = vkCreateSwapchainKHR(g_vk.dev, &ci, NULL, &g_vk.swapchain);
+    // (Android lets go of a swapchain whose present failed, and then it can't be the old one: a phone's crash)
+    if (made == VK_ERROR_NATIVE_WINDOW_IN_USE_KHR && old) {
+        ci.oldSwapchain = VK_NULL_HANDLE;
+        made = vkCreateSwapchainKHR(g_vk.dev, &ci, NULL, &g_vk.swapchain);
+    }
+    VK_CHECK(made);
     for (uint32_t i = 0; i < g_vk.sc_count; i++) vkDestroyImageView(g_vk.dev, g_vk.sc_views[i], NULL);
     hdr_release();
     if (old) vkDestroySwapchainKHR(g_vk.dev, old, NULL);
@@ -1190,6 +1196,30 @@ static void recreate_swapchain(void) {
     vkDeviceWaitIdle(g_vk.dev);
     create_swapchain();
 }
+
+#ifdef __ANDROID__
+// Android takes the window's surface away while the app is in the background (another app, the "All files access"
+// screen) and gives it a new one on return (SDL's window property): the VkSurfaceKHR made from the old one is lost,
+// so it and the swapchain are made again. false: no surface (in the background), nothing to draw into.
+static void *surface_window;  // the ANativeWindow g_vk.surface was made from
+static bool surface_current(void) {
+    void *nw = SDL_GetPointerProperty(SDL_GetWindowProperties(window), SDL_PROP_WINDOW_ANDROID_WINDOW_POINTER, NULL);
+    if (!nw || nw == surface_window) return nw != NULL;
+    LOG("[vk] the window has a new surface (back from the background)\n");
+    vk_present_idle();
+    pt_retire();
+    vkDeviceWaitIdle(g_vk.dev);
+    for (uint32_t i = 0; i < g_vk.sc_count; i++) vkDestroyImageView(g_vk.dev, g_vk.sc_views[i], NULL);
+    g_vk.sc_count = 0;
+    if (g_vk.swapchain) vkDestroySwapchainKHR(g_vk.dev, g_vk.swapchain, NULL);
+    g_vk.swapchain = VK_NULL_HANDLE;
+    vkDestroySurfaceKHR(g_vk.inst, g_vk.surface, NULL);
+    if (!SDL_Vulkan_CreateSurface(window, g_vk.inst, NULL, &g_vk.surface)) FATAL("SDL_Vulkan_CreateSurface: %s\n", SDL_GetError());
+    surface_window = nw;
+    create_swapchain();
+    return true;
+}
+#endif
 
 // ================================================================== present thread
 // vkQueuePresentKHR waits until the GPU has finished the frame (NVIDIA on Windows, windowed). On the game's GPU thread
@@ -1381,6 +1411,9 @@ bool vk_frame_begin(const float clear[4]) {
     SDL_GetWindowSizeInPixels(window, &w, &h);
     // minimised (Windows keeps the window's size then, but its surface is 0 x 0: every acquire was out of date)
     if (!w || !h || (SDL_GetWindowFlags(window) & SDL_WINDOW_MINIMIZED)) return false;
+#ifdef __ANDROID__
+    if (!surface_current()) return false;
+#endif
     uint64_t tp = SDL_GetTicksNS();
     present_wait_room();
     g_present_split[4] += SDL_GetTicksNS() - tp;
@@ -1913,6 +1946,9 @@ void ui_window_init(void) {
     winsize_apply(window);
     create_instance();
     if (!SDL_Vulkan_CreateSurface(window, g_vk.inst, NULL, &g_vk.surface)) FATAL("SDL_Vulkan_CreateSurface: %s\n", SDL_GetError());
+#ifdef __ANDROID__
+    surface_window = SDL_GetPointerProperty(SDL_GetWindowProperties(window), SDL_PROP_WINDOW_ANDROID_WINDOW_POINTER, NULL);
+#endif
     pick_device();
     create_device();
     create_swapchain();
