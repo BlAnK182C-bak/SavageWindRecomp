@@ -16,10 +16,6 @@ jobs:
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/cache@v4
-        with:
-          path: build/linux/android/deps
-          key: android-deps-${{ hashFiles('tools/linux/build_deps.sh') }}
       - name: NDK r28c, ninja
         run: |
           curl -fsSL -o "$RUNNER_TEMP/ndk.zip" https://dl.google.com/android/repository/android-ndk-r28c-linux.zip
@@ -27,6 +23,18 @@ jobs:
           unzip -q "$RUNNER_TEMP/ndk.zip" -d "$RUNNER_TEMP"
           echo "NDK=$RUNNER_TEMP/android-ndk-r28c" >> "$GITHUB_ENV"
           sudo apt-get update -q && sudo apt-get install -y -q ninja-build
+      # the deps (SDL3, FFmpeg, shaderc: most of the time) saved as soon as they're built, even if a later step fails
+      - id: deps
+        uses: actions/cache/restore@v4
+        with:
+          path: build/linux/android/deps
+          key: android-deps-${{ hashFiles('tools/linux/build_deps.sh') }}
+      - run: tools/linux/build_deps.sh android
+      - if: steps.deps.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: build/linux/android/deps
+          key: android-deps-${{ hashFiles('tools/linux/build_deps.sh') }}
       - run: tools/android/build.sh
       - name: Prerelease
         env:

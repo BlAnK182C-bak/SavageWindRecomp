@@ -111,18 +111,22 @@ GAMELIB_SHARED := -shared
 else ifeq ($(PLATFORM),android)
 NDK      ?= $(error NDK=<the Android NDK folder> (r28c))
 NDKBIN   := $(firstword $(wildcard $(NDK)/toolchains/llvm/prebuilt/*/bin))
-# API 33 (Android 13): its libvulkan has the Vulkan 1.3 functions the renderer calls directly
-CC       := $(NDKBIN)/clang --target=aarch64-linux-android33
-CXX      := $(NDKBIN)/clang++ --target=aarch64-linux-android33
+# API 33 (Android 13): its libvulkan has the Vulkan 1.3 functions the renderer calls directly. -fPIC: all of it goes
+# into a shared library (also ImGui and FidelityFX, which have flags of their own)
+CC       := $(NDKBIN)/clang --target=aarch64-linux-android33 -fPIC
+CXX      := $(NDKBIN)/clang++ --target=aarch64-linux-android33 -fPIC
 # (SDL's Java activity loads it and calls SDL_main: runtime/main.c)
 EXE      := $(B)/libmain.so
 DEPINC   := $(if $(DEPS),-I$(DEPS)/include)
 # (the define: part of GAMELIB_ID, so game code built for a desktop arm64 Linux is never loaded here, nor the reverse)
 GENFLAGS += -fPIC -DGUEST_BASE=0x1000000000ull
 OSFLAGS  := -Wno-format
-# FFmpeg and shaderc static (an APK's libraries can't carry versioned names); 16 KB page alignment, which some
-# Android 15+ phones need and the others accept
-LDFLAGS  := -shared -fuse-ld=lld -static-libstdc++ -Wl,-z,max-page-size=16384 $(if $(DEPS),-L$(DEPS)/lib) -lSDL3 \
+# FFmpeg and shaderc static (an APK's libraries can't carry versioned names), kept inside: -Bsymbolic as FFmpeg's own
+# shared builds (its arm64 assembly reaches its tables PC-relative, refused against an exported symbol), their
+# symbols not exported. -z defs: a function bionic lacks fails the link, not the app's start on the phone. 16 KB page
+# alignment, which some Android 15+ phones need and the others accept.
+LDFLAGS  := -shared -fuse-ld=lld -static-libstdc++ -Wl,-Bsymbolic -Wl,--exclude-libs,ALL -Wl,-z,defs \
+            -Wl,-z,max-page-size=16384 $(if $(DEPS),-L$(DEPS)/lib) -lSDL3 \
             -lavformat -lavcodec -lswscale -lavutil -lvulkan -lshaderc_combined -lz -llog -landroid -lm
 BACKEND_SRC := $(wildcard runtime/nvn/vulkan/*.c) $(wildcard runtime/nvn/vulkan/*.cpp)
 BACKEND_OBJ := $(patsubst runtime/%.cpp,$(B)/rt/%.o,$(patsubst runtime/%.c,$(B)/rt/%.o,$(BACKEND_SRC)))
