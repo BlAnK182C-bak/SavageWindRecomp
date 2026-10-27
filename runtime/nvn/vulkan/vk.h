@@ -87,6 +87,8 @@ VkDescriptorSet vk_alloc_set(VkDescriptorSetLayout layout);
 // image's (the window's resolution), shadow maps (Video > Shadow resolution)
 enum { RS_NONE = 0, RS_SCENE = 1, RS_OUT = 2, RS_SHADOW = 3 };
 
+enum { DEC_NONE = 0, DEC_ASTC, DEC_BC };  // TexBackend.dec_kind: decoded by runtime/nvn/astc.c, runtime/nvn/bcdecode.c
+
 typedef struct TexBackend {
     VkImage image;
     VmaAllocation mem;
@@ -108,8 +110,11 @@ typedef struct TexBackend {
     float sx, sy;
     void *pending_rgba;  // host-produced pixels (video) waiting to be uploaded on the render thread
     uint32_t pending_w, pending_h, pending_stride;
-    uint8_t astc_bw, astc_bh;  // ASTC without GPU support: decoded to RGBA8 on upload (runtime/nvn/astc.c)
-    bool astc_srgb;
+    // A compressed format the GPU lacks, decoded on the CPU on upload into format (textures.c decode_format)
+    uint8_t dec_kind;          // DEC_*
+    uint8_t dec_bc;            // DEC_BC: which one (BCD_*, runtime/nvn/bcdecode.h)
+    uint8_t dec_bw, dec_bh;    // its block size in texels
+    bool dec_flag;             // DEC_ASTC: sRGB (the decoder's endpoint expansion); BC4, BC5, BC6H: signed
     uint32_t glyph_gen;          // a button glyph sheet (runtime/nvn/glyphs.c): the icons it was uploaded with
     // textures.c: one image per memory and shape, shared by every texture made there
     uint64_t key_addr;           // 0: not shared

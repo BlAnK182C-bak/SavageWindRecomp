@@ -12,6 +12,7 @@
 #include "vk.h"
 #include "../../settings.h"
 #include "../astc.h"
+#include "../bcdecode.h"
 #include "../glyphs.h"
 #include "../renderer.h"
 
@@ -146,6 +147,67 @@ static bool format_supports(VkFormat f, VkFormatFeatureFlags want) {
     vkGetPhysicalDeviceFormatProperties(g_vk.phys, f, &p);
     return (p.optimalTilingFeatures & want) == want;
 }
+
+static bool is_bc(VkFormat f) { return f >= VK_FORMAT_BC1_RGB_UNORM_BLOCK && f <= VK_FORMAT_BC7_SRGB_BLOCK; }
+
+// SAVAGEWIND_VK_DECODE_BC=1: BC textures are decoded on the CPU (runtime/nvn/bcdecode.c) even on a GPU that has BC, to
+// try on a desktop one what the GPUs without it (Mali: ASTC instead) need.
+static bool decode_bc_forced(void) {
+    static int on = -1;
+    if (on < 0) {
+        const char *e = getenv("SAVAGEWIND_VK_DECODE_BC");
+        on = e && *e && *e != '0';
+    }
+    return on;
+}
+
+// The uncompressed format a compressed one (vf, the NVN format of t) is decoded to on the CPU when the GPU can't (or
+// decode_bc_forced) hold it: the same colour space, 8 bits or a half float a channel (BC6H); ASTC always RGBA8. Sets
+// b->dec_*. VK_FORMAT_UNDEFINED: nothing decodes it, or the GPU can't sample the result either.
+static VkFormat decode_format(const NvnTexture *t, VkFormat vf, TexBackend *b, VkFormatFeatureFlags need) {
+    static const struct { VkFormat bc, out; uint8_t n; bool sgn; } bcs[] = {
+        {VK_FORMAT_BC1_RGBA_UNORM_BLOCK, VK_FORMAT_R8G8B8A8_UNORM, BCD_BC1, 0},
+        {VK_FORMAT_BC1_RGBA_SRGB_BLOCK, VK_FORMAT_R8G8B8A8_SRGB, BCD_BC1, 0},
+        {VK_FORMAT_BC2_UNORM_BLOCK, VK_FORMAT_R8G8B8A8_UNORM, BCD_BC2, 0},
+        {VK_FORMAT_BC2_SRGB_BLOCK, VK_FORMAT_R8G8B8A8_SRGB, BCD_BC2, 0},
+        {VK_FORMAT_BC3_UNORM_BLOCK, VK_FORMAT_R8G8B8A8_UNORM, BCD_BC3, 0},
+        {VK_FORMAT_BC3_SRGB_BLOCK, VK_FORMAT_R8G8B8A8_SRGB, BCD_BC3, 0},
+        {VK_FORMAT_BC4_UNORM_BLOCK, VK_FORMAT_R8_UNORM, BCD_BC4, 0},
+        {VK_FORMAT_BC4_SNORM_BLOCK, VK_FORMAT_R8_SNORM, BCD_BC4, 1},
+        {VK_FORMAT_BC5_UNORM_BLOCK, VK_FORMAT_R8G8_UNORM, BCD_BC5, 0},
+        {VK_FORMAT_BC5_SNORM_BLOCK, VK_FORMAT_R8G8_SNORM, BCD_BC5, 1},
+        {VK_FORMAT_BC6H_UFLOAT_BLOCK, VK_FORMAT_R16G16B16A16_SFLOAT, BCD_BC6H, 0},
+        {VK_FORMAT_BC6H_SFLOAT_BLOCK, VK_FORMAT_R16G16B16A16_SFLOAT, BCD_BC6H, 1},
+        {VK_FORMAT_BC7_UNORM_BLOCK, VK_FORMAT_R8G8B8A8_UNORM, BCD_BC7, 0},
+        {VK_FORMAT_BC7_SRGB_BLOCK, VK_FORMAT_R8G8B8A8_SRGB, BCD_BC7, 0},
+    };
+    const FormatInfo *fi = t->layout.fmt;
+    uint8_t kind = DEC_NONE, bc = 0;
+    bool flag = false;
+    VkFormat out = VK_FORMAT_UNDEFINED;
+    if (!fi) return out;
+    if (vf >= VK_FORMAT_ASTC_4x4_UNORM_BLOCK && vf <= VK_FORMAT_ASTC_12x12_SRGB_BLOCK && fi->bpb == 16) {
+        kind = DEC_ASTC;
+        flag = t->format >= 0x87;  // (the sRGB ones)
+        out = flag ? VK_FORMAT_R8G8B8A8_SRGB : VK_FORMAT_R8G8B8A8_UNORM;
+    }
+    for (size_t i = 0; i < sizeof bcs / sizeof *bcs; i++)
+        if (bcs[i].bc == vf && fi->bpb == bc_block_bytes(bcs[i].n)) {
+            kind = DEC_BC;
+            bc = bcs[i].n;
+            flag = bcs[i].sgn;
+            out = bcs[i].out;
+        }
+    if (!kind || !format_supports(out, need)) return VK_FORMAT_UNDEFINED;
+    b->dec_kind = kind;
+    b->dec_bc = bc;
+    b->dec_bw = fi->bw;
+    b->dec_bh = fi->bh;
+    b->dec_flag = flag;
+    return out;
+}
+
+static uint32_t dec_texel_bytes(const TexBackend *b) { return b->dec_kind == DEC_BC ? bc_texel_bytes(b->dec_bc) : 4; }
 
 // ================================================================== output resolution / per-frame clears
 // Render targets are allocated at one of two scales (runtime/nvn/output_scale.c sets both every presented frame):
@@ -338,16 +400,19 @@ static void create_image(NvnTexture *t, TexBackend *b) {
     if (samples > 1) levels = 1;
     VkFormat vf = mf.vf;
     VkFormatFeatureFlags need = VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT | VK_FORMAT_FEATURE_TRANSFER_DST_BIT;
-    b->astc_bw = b->astc_bh = 0;
-    if (!format_supports(vf, need)) {
-        bool astc = vf >= VK_FORMAT_ASTC_4x4_UNORM_BLOCK && vf <= VK_FORMAT_ASTC_12x12_SRGB_BLOCK;
-        const FormatInfo *fi = t->layout.fmt;
-        if (astc && fi && fi->bpb == 16) {  // desktop GPUs: decoded on the CPU into an RGBA8 image of the same colour space
-            b->astc_bw = fi->bw;
-            b->astc_bh = fi->bh;
-            b->astc_srgb = t->format >= 0x87;
-            vf = b->astc_srgb ? VK_FORMAT_R8G8B8A8_SRGB : VK_FORMAT_R8G8B8A8_UNORM;
-        } else {
+    b->dec_kind = DEC_NONE;
+    bool forced = is_bc(vf) && decode_bc_forced();
+    if (forced || !format_supports(vf, need)) {
+        // ASTC on desktop GPUs, BC on mobile ones (or SAVAGEWIND_VK_DECODE_BC): decoded on the CPU into an
+        // uncompressed image
+        VkFormat df = decode_format(t, vf, b, need);
+        if (df != VK_FORMAT_UNDEFINED) {
+            vf = df;
+            static int said[3];
+            if (!said[b->dec_kind]++)
+                LOG("[vk] %s textures are decoded on the CPU (%s)\n", b->dec_kind == DEC_BC ? "BC" : "ASTC",
+                    forced ? "SAVAGEWIND_VK_DECODE_BC" : "the GPU has no such compression");
+        } else if (!format_supports(vf, need)) {
             static int nlog;
             if (nlog++ < 20) LOG("[vk] format %d (nvn %#x) not supported: RGBA8 instead\n", vf, t->format);
             vf = VK_FORMAT_R8G8B8A8_UNORM;
@@ -379,6 +444,7 @@ static void create_image(NvnTexture *t, TexBackend *b) {
     if (r != VK_SUCCESS) {
         LOG("[vk] image creation failed (%d): nvn fmt %#x %ux%ux%u target %u\n", r, t->format, t->width, t->height, t->depth, t->target);
         ci.format = vf = VK_FORMAT_R8G8B8A8_UNORM;
+        if (b->dec_kind && dec_texel_bytes(b) != 4) b->dec_kind = DEC_NONE;  // (RGBA8 holds no R8, RG8 or half floats)
         ci.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT |
                    VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
         ci.flags &= ~VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT;
@@ -876,7 +942,7 @@ static void upload_levels(NvnTexture *t, TexBackend *b, uint32_t level_mask) {
     const FormatInfo *fi = t->layout.fmt;
     VkFmt mf = fmt_of(t->format);
     if (!t->addr || t->target == 10 || !fi || !fi->bpb || !storage_readable(t, storage_size(t))) return;
-    if (b->format != mf.vf && !b->astc_bw) return;  // unsupported format: nothing sensible to copy
+    if (b->format != mf.vf && !b->dec_kind) return;  // unsupported format: nothing sensible to copy
     VkCommandBuffer cb = vk_upload_cmd();
     uint32_t layers = t->layout.layers ? t->layout.layers : 1;
     if (layers > b->layers && b->depth == 1) layers = b->layers;
@@ -887,19 +953,30 @@ static void upload_levels(NvnTexture *t, TexBackend *b, uint32_t level_mask) {
         for (uint32_t lv = 0; lv < levels; lv++) {
             if (!((level_mask >> lv) & 1)) continue;
             LevelLayout l = tegra_level(&t->layout, lv);
-            if (b->astc_bw) {  // blocks -> linear block rows -> RGBA8 texels
+            if (b->dec_kind) {  // blocks -> linear block rows -> decoded texels (every slice of a 3D level)
                 const uint8_t *src = (const uint8_t *)(uintptr_t)t->addr + layer * layer_size + l.offset;
-                uint8_t *blocks = malloc((uint64_t)l.wb * l.hb * 16);
-                if (linear) for (uint32_t y = 0; y < l.hb; y++) memcpy(blocks + (uint64_t)y * l.wb * 16, src + (uint64_t)y * t->stride, l.wb * 16);
-                else tegra_deswizzle(src, blocks, l.wb, l.hb, 1, 16, l.block_height_log2, l.block_depth_log2);
-                VkSpan s = vk_transient((uint64_t)l.w * l.h * 4, 16);
-                astc_decode_ldr(blocks, l.w, l.h, b->astc_bw, b->astc_bh, b->astc_srgb, s.ptr);
+                uint32_t bpb = fi->bpb;
+                uint64_t bslice = (uint64_t)l.wb * l.hb * bpb, tslice = (uint64_t)l.w * l.h * dec_texel_bytes(b);
+                uint8_t *blocks = malloc(bslice * l.d);
+                if (linear) for (uint32_t y = 0; y < l.hb; y++) memcpy(blocks + (uint64_t)y * l.wb * bpb, src + (uint64_t)y * (t->stride ? t->stride : l.wb * bpb), l.wb * bpb);
+                else tegra_deswizzle(src, blocks, l.wb, l.hb, l.d, bpb, l.block_height_log2, l.block_depth_log2);
+                if (lv == 0 && layer == 0 && l.d == 1 && b->dec_kind == DEC_BC) dump_tex(t, l.w, l.h, mf.vf, blocks, bslice);  // (the blocks, as on any GPU)
+                if (lv == 0 && layer == 0 && t->format == 0x49 && t->pool &&  // (the game's button glyphs: device icons)
+                    glyphs_apply(t->addr, t->pool->storage, t->pool->storage + t->pool->size, t->format, t->width,
+                                 t->height, blocks, l.wb, l.hb))
+                    b->glyph_gen = glyphs_generation();
+                VkSpan s = vk_transient(tslice * l.d, 16);
+                for (uint32_t z = 0; z < l.d; z++) {
+                    if (b->dec_kind == DEC_ASTC) astc_decode_ldr(blocks + z * bslice, l.w, l.h, b->dec_bw, b->dec_bh, b->dec_flag, (uint8_t *)s.ptr + z * tslice);
+                    else bc_decode(b->dec_bc, blocks + z * bslice, l.w, l.h, b->dec_flag, (uint8_t *)s.ptr + z * tslice);
+                }
                 free(blocks);
-                if (lv == 0 && layer == 0)
-                    dump_tex(t, l.w, l.h, b->astc_srgb ? VK_FORMAT_R8G8B8A8_SRGB : VK_FORMAT_R8G8B8A8_UNORM, s.ptr, (uint64_t)l.w * l.h * 4);
+                if (lv == 0 && layer == 0 && b->dec_kind == DEC_ASTC)
+                    dump_tex(t, l.w, l.h, b->dec_flag ? VK_FORMAT_R8G8B8A8_SRGB : VK_FORMAT_R8G8B8A8_UNORM, s.ptr, tslice);
                 VkBufferImageCopy rg = {.bufferOffset = s.off, .bufferRowLength = l.w, .bufferImageHeight = l.h,
-                                        .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, lv, layer, 1},
-                                        .imageExtent = {l.w < level_w(b, lv) ? l.w : level_w(b, lv), l.h < level_h(b, lv) ? l.h : level_h(b, lv), 1}};
+                                        .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, lv, b->depth > 1 ? 0 : layer, 1},
+                                        .imageExtent = {l.w < level_w(b, lv) ? l.w : level_w(b, lv), l.h < level_h(b, lv) ? l.h : level_h(b, lv),
+                                                        b->depth > 1 ? l.d : 1}};
                 vk_dl_note_upload((void *)b->image, rg.imageExtent.width, rg.imageExtent.height, rg.imageSubresource.mipLevel);
                 vkCmdCopyBufferToImage(cb, s.buf, b->image, VK_IMAGE_LAYOUT_GENERAL, 1, &rg);
                 continue;
@@ -1207,8 +1284,6 @@ VkComponentMapping vk_sample_swizzle(NvnTexture *t, const NvnTextureView *v) {
     return sw;
 }
 
-static bool is_bc(VkFormat f) { return f >= VK_FORMAT_BC1_RGB_UNORM_BLOCK && f <= VK_FORMAT_BC7_SRGB_BLOCK; }
-
 // Attachment view for a draw into the blocks of BC image b, a texel a 4x4 block in format fmt (the game's view: RG32
 // for 8-byte blocks): a view of b->block, made for it, that vk_block_flush copies into b after the pass.
 static VkImageView block_view(TexBackend *b, VkFormat fmt) {
@@ -1263,6 +1338,14 @@ VkImageView vk_view(NvnTexture *t, const NvnTextureView *v, bool has_view, bool 
     if (v && (v->setmask & 4) && !(b->aspect & (VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT))) {
         VkFormat vf = fmt_of(v->format).vf;
         if (vk_format(t->format) == b->format) fmt = vf;  // (fallback images keep their own format)
+        else if (render && b->dec_kind && !is_bc(vf) && vf != b->format) {
+            // A CPU-decoded image has no blocks to draw into (block_view: BOTW encodes NPC speech bubbles to BC4 on
+            // the GPU through an RG32 view). Views of it, in a compressed format or not, otherwise keep its decoded
+            // format (a compressed one would be invalid on an uncompressed image).
+            static int nlog;
+            if (!nlog++) LOG("[vk] draw into the blocks of a CPU-decoded texture skipped (nvn %#x, view %#x)\n", t->format, v->format);
+            return VK_NULL_HANDLE;
+        }
     }
     uint32_t lv0 = v && (v->setmask & 1) ? v->base_level : 0;
     uint32_t nlv = v && (v->setmask & 1) && v->num_levels ? v->num_levels : b->levels - (lv0 < b->levels ? lv0 : 0);

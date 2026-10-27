@@ -256,7 +256,7 @@ switches - are in [docs/SAVAGE-WIND.md](docs/SAVAGE-WIND.md).
   generation),
   [Fira Sans](https://github.com/mozilla/Fira) (SIL OFL 1.1), [Noto Sans Thai](https://github.com/notofonts/thai)
   (SIL OFL 1.1), [stb_image / stb_image_write](https://github.com/nothings/stb)
-  (public domain / MIT), [shaderc](https://github.com/google/shaderc)
+  (public domain / MIT), [bcdec](https://github.com/iOrange/bcdec) (MIT or Unlicense), [shaderc](https://github.com/google/shaderc)
   (Apache 2.0), [Zig](https://ziglang.org) (MIT), [Capstone](https://www.capstone-engine.org) (BSD),
   [Unicorn](https://www.unicorn-engine.org) (GPL 2.0), [python-lz4](https://github.com/python-lz4/python-lz4) (BSD).
 
@@ -283,5 +283,8 @@ The Windows release zip also bundles, unchanged unless noted, under their own li
 - AMD FidelityFX SDK 1.1.4 (MIT, `FidelityFX-LICENSE.txt`), compiled into savagewind.exe: FSR 3 frame interpolation,
   optical flow and the Vulkan backend, from [its source](https://github.com/GPUOpen-LibrariesAndSDKs/FidelityFX-SDK/tree/v1.1.4)
   with two alignment fixes (`third_party/FidelityFX/README.md`) and shaders compiled by `tools/ffx_shaders.py`.
+- bcdec v0.985 (MIT or Unlicense, `third_party/bcdec/LICENSE`), compiled into the Vulkan backend: decodes BC textures on the
+  CPU for GPUs without BC support (phones), from [its source](https://github.com/iOrange/bcdec/tree/80859ed3b7afb1c527a2a99d70c61457bea72d0c),
+  unchanged.
 - The Fira Sans font, Medium and SemiBold (SIL OFL 1.1, `FiraSans-OFL.txt`), and the Noto Sans Thai font, Medium,
   for the menus in Thai (SIL OFL 1.1, `NotoSansThai-OFL.txt`).

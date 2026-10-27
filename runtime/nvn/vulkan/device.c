@@ -420,6 +420,7 @@ static void create_device(void) {
     b->samplerAnisotropy = h->samplerAnisotropy;
     g_vk.feat_aniso = h->samplerAnisotropy;
     b->textureCompressionBC = h->textureCompressionBC;
+    b->textureCompressionASTC_LDR = h->textureCompressionASTC_LDR;  // (phones: the ASTC textures are sampled as they are)
     b->shaderInt64 = h->shaderInt64;
     b->depthBiasClamp = h->depthBiasClamp;
     b->depthClamp = h->depthClamp;
