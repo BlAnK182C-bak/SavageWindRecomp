@@ -39,7 +39,8 @@ import sys
 from collections import namedtuple
 
 MAIN_BASE = 0x7000000000  # the base KNOWN's addresses are at (tools/layout.py: main is the first module); main at
-                          # another base (gen.py --base: Android) has every site that far off, and KNOWN keeps as is
+                          # another base (gen.py --base: Android) has every address site that far off (not an imm
+                          # site's number), and KNOWN keeps as is
 
 # name, version, main module build id (the first 8 bytes; tools/sw_probe.py prints it), supported. One that isn't
 # supported yet is known but refused by the setup until its sites are checked.
@@ -536,7 +537,7 @@ def resolve(main, known=None, log=None):
             problems.append(f'{s.name}: {e}')
             continue
         k = (known or {}).get(s.name)
-        k = None if k is None else k + shift
+        k = None if k is None else k + (0 if s.kind == 'imm' else shift)
         if found is not None and k is not None and found != k:
             raise SiteError(f'{s.name}: the pattern finds {found:#x}, the table says {k:#x}')
         if found is None and k is None:

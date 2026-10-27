@@ -157,6 +157,9 @@ def main():
             check(False, 'KNOWN is at MAIN_BASE: a table in the new base\'s addresses disagrees')
         except gs.SiteError:
             check(True, '')
+        gs.SITES = sites + [gs.Site('field', 'imm', pat, 4)]
+        check(gs.resolve(c, {'fn': BASE + 0x800, 'field': 0x10}) == dict(want, field=0x10),
+              'an imm site is a number: KNOWN\'s at another base unshifted')
         gs.SITES = [gs.Site('fn', 'code', 'd503201f d503201f', 0)]  # (several places: the table, shifted)
         check(gs.resolve(c, {'fn': BASE + 0x800}, lambda s: None) == {'fn': ab + 0x800},
               'the fallback table follows the base')
