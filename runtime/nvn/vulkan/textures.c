@@ -7,6 +7,7 @@
 #include <pthread.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 
 #include "vk.h"
 #include "../../settings.h"
@@ -814,6 +815,62 @@ static void upload_scaled(VkCommandBuffer cb, TexBackend *b, VkSpan s, VkBufferI
     vk_defer_image(img, mem);
 }
 
+// (debugging) SAVAGEWIND_DUMP_TEX=1: the 2D textures the game uploads, level 0 as it came (before the button icon
+// replacements of runtime/nvn/glyphs.c), saved once per contents as tex_dump/<hash>_<w>x<h>_f<NVN format>.dds in the
+// data folder and logged. The hash is FNV-1a of the uploaded bytes, what glyphs.c recognises a texture by. To find the
+// textures of a screen: open it, then look at the files written last. ASTC textures are saved decoded (RGBA8).
+static uint32_t dxgi_of(VkFormat f) {
+    switch (f) {
+    case VK_FORMAT_R8_UNORM: return 61;
+    case VK_FORMAT_R8G8_UNORM: return 49;
+    case VK_FORMAT_R8G8B8A8_UNORM: return 28;
+    case VK_FORMAT_R8G8B8A8_SRGB: return 29;
+    case VK_FORMAT_R16G16B16A16_SFLOAT: return 10;
+    case VK_FORMAT_BC1_RGBA_UNORM_BLOCK: return 71;
+    case VK_FORMAT_BC1_RGBA_SRGB_BLOCK: return 72;
+    case VK_FORMAT_BC2_UNORM_BLOCK: return 74;
+    case VK_FORMAT_BC2_SRGB_BLOCK: return 75;
+    case VK_FORMAT_BC3_UNORM_BLOCK: return 77;
+    case VK_FORMAT_BC3_SRGB_BLOCK: return 78;
+    case VK_FORMAT_BC4_UNORM_BLOCK: return 80;
+    case VK_FORMAT_BC4_SNORM_BLOCK: return 81;
+    case VK_FORMAT_BC5_UNORM_BLOCK: return 83;
+    case VK_FORMAT_BC5_SNORM_BLOCK: return 84;
+    case VK_FORMAT_BC6H_UFLOAT_BLOCK: return 95;
+    case VK_FORMAT_BC6H_SFLOAT_BLOCK: return 96;
+    case VK_FORMAT_BC7_UNORM_BLOCK: return 98;
+    case VK_FORMAT_BC7_SRGB_BLOCK: return 99;
+    default: return 0;  // (not saved)
+    }
+}
+
+static void dump_tex(const NvnTexture *t, uint32_t w, uint32_t h, VkFormat vf, const uint8_t *data, uint64_t n) {
+    static int on = -1;
+    if (on < 0) on = getenv("SAVAGEWIND_DUMP_TEX") != NULL;
+    uint32_t dxgi = on ? dxgi_of(vf) : 0;
+    if (!dxgi) return;
+    uint64_t hash = 0xcbf29ce484222325ull;
+    for (uint64_t i = 0; i < n; i++) hash = (hash ^ data[i]) * 0x100000001b3ull;
+    char path[96];
+    snprintf(path, sizeof path, "tex_dump/%016llx_%ux%u_f%x.dds", (unsigned long long)hash, w, h, t->format);
+    FILE *f = fopen(path, "rb");
+    if (f) { fclose(f); return; }  // (these contents already saved)
+    mkdir("tex_dump", 0755);
+    if (!(f = fopen(path, "wb"))) return;
+    // "DDS ", DDS_HEADER (size, flags caps|height|width|pixelformat, height, width, linear size, depth, 1 level,
+    // pixel format, caps: texture), then DDS_HEADER_DXT10 (format, 2D, no flags, 1 layer) after FourCC "DX10". R8 goes
+    // as the older luminance format instead: more viewers read it (the HUD's button masks are R8).
+    uint32_t hd[37] = {0x20534444, 124, 0x1007, h, w, (uint32_t)n, 0, 1};
+    hd[19] = 32, hd[27] = 0x1000;
+    if (dxgi == 61) hd[20] = 0x20000, hd[22] = 8, hd[23] = 0xff;
+    else hd[20] = 4, hd[21] = 0x30315844, hd[32] = dxgi, hd[33] = 3, hd[35] = 1;
+    fwrite(hd, 4, dxgi == 61 ? 32 : 37, f);
+    fwrite(data, 1, n, f);
+    fclose(f);
+    LOG("[vk] texture #%llu %ux%u format %#x hash %016llx saved as %s\n", (unsigned long long)t->debug_id, w, h, t->format,
+        (unsigned long long)hash, path);
+}
+
 // Guest memory -> image for the levels in level_mask (bit per level), every layer or slice.
 static void upload_levels(NvnTexture *t, TexBackend *b, uint32_t level_mask) {
     const FormatInfo *fi = t->layout.fmt;
@@ -838,6 +895,8 @@ static void upload_levels(NvnTexture *t, TexBackend *b, uint32_t level_mask) {
                 VkSpan s = vk_transient((uint64_t)l.w * l.h * 4, 16);
                 astc_decode_ldr(blocks, l.w, l.h, b->astc_bw, b->astc_bh, b->astc_srgb, s.ptr);
                 free(blocks);
+                if (lv == 0 && layer == 0)
+                    dump_tex(t, l.w, l.h, b->astc_srgb ? VK_FORMAT_R8G8B8A8_SRGB : VK_FORMAT_R8G8B8A8_UNORM, s.ptr, (uint64_t)l.w * l.h * 4);
                 VkBufferImageCopy rg = {.bufferOffset = s.off, .bufferRowLength = l.w, .bufferImageHeight = l.h,
                                         .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, lv, layer, 1},
                                         .imageExtent = {l.w < level_w(b, lv) ? l.w : level_w(b, lv), l.h < level_h(b, lv) ? l.h : level_h(b, lv), 1}};
@@ -857,6 +916,7 @@ static void upload_levels(NvnTexture *t, TexBackend *b, uint32_t level_mask) {
             } else {
                 tegra_deswizzle(src, lin, l.wb, l.hb, l.d, fi->bpb, l.block_height_log2, l.block_depth_log2);
             }
+            if (lv == 0 && layer == 0 && l.d == 1 && !expand) dump_tex(t, l.w, l.h, mf.vf, lin, sz);
             if (lv == 0 && layer == 0 && t->format == 0x49 && t->pool &&  // (the game's button glyphs: device icons)
                 glyphs_apply(t->addr, t->pool->storage, t->pool->storage + t->pool->size, t->format, t->width,
                              t->height, lin, l.wb, l.hb))

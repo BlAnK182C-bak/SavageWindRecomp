@@ -14,6 +14,8 @@ generated-*/
 # build output, caches, saves and settings
 build/
 /cache/
+# textures saved by SAVAGEWIND_DUMP_TEX (runtime/nvn/vulkan/textures.c): the game's own, never tracked
+/tex_dump/
 save/
 /savagewind.ini
 # tools and Python environments (machine-specific)
