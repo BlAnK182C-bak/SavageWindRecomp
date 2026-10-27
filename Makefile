@@ -26,6 +26,16 @@ B        ?= build/$(ARCH)
 endif
 GENSIMD  := --simd $(if $(filter aarch64,$(ARCH)),asm,c)
 endif
+# Android (arm64): `make PLATFORM=android NDK=<Android NDK> DEPS=<its deps>` (tools/android/build.sh builds the app).
+# The guest window sits lower there (runtime/rt.h GUEST_BASE: Android's allocator reserves around the desktop's), so
+# the game code has its own generation, generated-android/, built on the player's PC (tools/android/gamelib.sh).
+ifeq ($(PLATFORM),android)
+GEN      := generated-android
+B        ?= build/android
+GENSIMD  := --simd asm
+GENARGS  += --base 0x1000000000
+endif
+PLATFORM_SRC := $(patsubst android,linux,$(PLATFORM))  # (Android: the Linux host layer, runtime/platform/linux.c)
 
 # B: build dir. MACOS_MIN: oldest macOS to run on (default: this one). DEPS: prefix with SDL3 / FFmpeg instead of
 # Homebrew's (make deps). `make app` sets all three (build/mac15, 15.0, build/deps); plain `make` uses none.
@@ -46,7 +56,7 @@ GENFLAGS_ZIG := -Xclang $(filter -O%,$(GENFLAGS)) -fno-vectorize -fno-slp-vector
 GEN_SRC  := $(wildcard $(GEN)/*.c) $(wildcard $(GEN)/*/*.c)
 GEN_OBJ  := $(patsubst %.c,$(B)/obj/%.o,$(patsubst $(GEN)/%,%,$(GEN_SRC))) $(B)/obj/tools/gamelib_entry.o
 RT_SRC   := $(wildcard runtime/*.c) $(wildcard runtime/hle/*.c) $(wildcard runtime/services/*.c) \
-            $(wildcard runtime/nvn/*.c) $(wildcard runtime/nvn/maxwell/*.c) runtime/platform/$(PLATFORM).c
+            $(wildcard runtime/nvn/*.c) $(wildcard runtime/nvn/maxwell/*.c) runtime/platform/$(strip $(PLATFORM_SRC)).c
 RT_HDRS  := $(wildcard runtime/*.h) $(wildcard runtime/platform/*.h) $(wildcard runtime/nvn/*.h) \
             $(wildcard runtime/nvn/maxwell/*.h) $(wildcard runtime/nvn/vulkan/*.h) $(wildcard runtime/ui/*.h)
 UI_SRC   := $(wildcard runtime/ui/*.mm)
@@ -97,6 +107,32 @@ IMGUI_OBJ += $(B)/imgui/imgui_impl_vulkan.o
 UIFLAGS  := -x c++  # the .mm UI sources are plain C++ apart from __APPLE__ blocks
 GAMELIB  := $(B)/swgame.so
 GAMELIB_LDFLAGS := -shared -fuse-ld=lld  # (the runtime functions it calls: the app's own, -rdynamic)
+GAMELIB_SHARED := -shared
+else ifeq ($(PLATFORM),android)
+NDK      ?= $(error NDK=<the Android NDK folder> (r28c))
+NDKBIN   := $(firstword $(wildcard $(NDK)/toolchains/llvm/prebuilt/*/bin))
+# API 33 (Android 13): its libvulkan has the Vulkan 1.3 functions the renderer calls directly
+CC       := $(NDKBIN)/clang --target=aarch64-linux-android33
+CXX      := $(NDKBIN)/clang++ --target=aarch64-linux-android33
+# (SDL's Java activity loads it and calls SDL_main: runtime/main.c)
+EXE      := $(B)/libmain.so
+DEPINC   := $(if $(DEPS),-I$(DEPS)/include)
+# (the define: part of GAMELIB_ID, so game code built for a desktop arm64 Linux is never loaded here, nor the reverse)
+GENFLAGS += -fPIC -DGUEST_BASE=0x1000000000ull
+OSFLAGS  := -Wno-format
+# FFmpeg and shaderc static (an APK's libraries can't carry versioned names); 16 KB page alignment, which some
+# Android 15+ phones need and the others accept
+LDFLAGS  := -shared -fuse-ld=lld -static-libstdc++ -Wl,-z,max-page-size=16384 $(if $(DEPS),-L$(DEPS)/lib) -lSDL3 \
+            -lavformat -lavcodec -lswscale -lavutil -lvulkan -lshaderc_combined -lz -llog -landroid -lm
+BACKEND_SRC := $(wildcard runtime/nvn/vulkan/*.c) $(wildcard runtime/nvn/vulkan/*.cpp)
+BACKEND_OBJ := $(patsubst runtime/%.cpp,$(B)/rt/%.o,$(patsubst runtime/%.c,$(B)/rt/%.o,$(BACKEND_SRC)))
+IMGUI_OBJ += $(B)/imgui/imgui_impl_vulkan.o
+UIFLAGS  := -x c++
+GAMELIB  := $(B)/swgame.so
+# The runtime functions the game code calls are libmain.so's, and Android resolves them only from a library's own
+# dependencies: it names libmain.so as one. A stub stands in for it at link time (the PC builds the game code alone).
+GAMELIB_STUB := $(B)/stub/libmain.so
+GAMELIB_LDFLAGS := -shared -fuse-ld=lld -Wl,-z,max-page-size=16384 -Wl,-z,undefs $(GAMELIB_STUB)
 GAMELIB_SHARED := -shared
 else
 EXE      := $(B)/savagewind.exe
@@ -224,10 +260,16 @@ $(EXE): $(RT_OBJ) $(BACKEND_OBJ) $(UI_OBJ) $(IMGUI_OBJ)
 	mv -f $(dir $@)link/$(notdir $@) $@
 
 # its id file (<library>.id) says what it was built from without loading it (runtime/gamelib.c)
-$(GAMELIB): $(GEN_OBJ) | $(EXE)
+$(GAMELIB): $(GEN_OBJ) | $(or $(GAMELIB_STUB),$(EXE))
 	$(CC) $(GAMELIB_LDFLAGS) -o $@.tmp $^
 	mv -f $@.tmp $@
 	echo $(GAMELIB_ID) > $@.id
+
+ifneq ($(GAMELIB_STUB),)
+$(GAMELIB_STUB):
+	@mkdir -p $(dir $@)
+	echo 'void savagewind_stub(void) {}' | $(CC) -shared -fuse-ld=lld -Wl,-soname,libmain.so -x c - -o $@
+endif
 
 $(B)/rt/ui/i18n.o: $(wildcard runtime/ui/i18n/*.inc) runtime/ui/i18n.h
 $(B)/rt/ui/%.o: runtime/ui/%.mm $(RT_HDRS)
@@ -250,8 +292,10 @@ $(B)/imgui/imgui_impl_metal.o: $(IMGUI)/backends/imgui_impl_metal.mm
 PY := $(firstword $(wildcard tools/venv/bin/python) $(wildcard tools/venv/Scripts/python.exe))
 
 # GENARGS=--any-version: a game version not supported yet (tools/game_sites.py; docs/SAVAGE-WIND.md)
+# EXEFS: the game's exefs folder (e.g. the one a desktop setup made: ~/.local/share/savagewind/extracted/exefs)
+EXEFS ?= extracted/exefs
 gen:  # every module of the exefs, at the addresses tools/layout.py gives them
-	cd tools && ../$(PY) gen.py all ../extracted/exefs ../$(GEN) --hle ../runtime/hle/hle_symbols.txt $(GENSIMD) $(GENARGS)
+	cd tools && ../$(PY) gen.py all $(abspath $(EXEFS)) ../$(GEN) --hle ../runtime/hle/hle_symbols.txt $(GENSIMD) $(GENARGS)
 
 gen-objs: $(GEN_OBJ)
 

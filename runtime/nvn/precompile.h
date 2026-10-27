@@ -13,9 +13,9 @@ extern "C" {
 enum { SP_IDLE, SP_READING, SP_COMPILING, SP_PIPELINES, SP_DONE, SP_FAILED, SP_CANCELLED };
 
 typedef struct {
-    _Atomic int state;        // SP_*
-    _Atomic int done, total;  // the current step's progress
-    _Atomic bool cancel;      // set to stop (the caches keep what is done)
+    _Atomic(int) state;       // SP_* (the (type) form: in C++ too, where Android's stdatomic.h makes it a std::atomic)
+    _Atomic(int) done, total; // the current step's progress
+    _Atomic(bool) cancel;     // set to stop (the caches keep what is done)
     // the result
     int shaders, keys, made, cached, failed, pipelines;
     double seconds;

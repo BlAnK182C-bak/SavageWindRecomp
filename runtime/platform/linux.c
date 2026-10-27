@@ -109,13 +109,34 @@ static void require_cpu(void) {
     exit(1);
 }
 
+#ifdef __ANDROID__
+// Android has no home folder: the data root (game files, saves, settings, the log) is /sdcard/SavageWind once the
+// player allows "All files access" (the activity asks: tools/android/SavageWindActivity.java), where a file manager
+// or a PC over USB can put the game files; else the app's own folder there, Android/data/<package>/files.
+static void android_data_root(void) {
+    const char *env = getenv("SAVAGEWIND_DATA_ROOT"), *dir = "/storage/emulated/0/SavageWind";
+    if (env && *env) return;
+    mkdir(dir, 0755);
+    if (access(dir, W_OK) != 0) dir = SDL_GetAndroidExternalStoragePath();
+    if (dir) setenv("SAVAGEWIND_DATA_ROOT", dir, 1);
+}
+#endif
+
 void plat_init(void) {
+#ifdef __ANDROID__
+    android_data_root();
+#endif
     log_to_file_without_terminal();
     require_cpu();
 }
 
 // (inside an AppImage: the binary in its mount, which stays mounted while this process lives - re-exec included)
+// Android: the process is the system's app_process, nothing of ours is next to it (runtime/paths.c rt_resource)
 bool plat_exe_path(char *buf, size_t size) {
+#ifdef __ANDROID__
+    (void)buf, (void)size;
+    return false;
+#endif
     ssize_t n = readlink("/proc/self/exe", buf, size - 1);
     if (n <= 0) return false;
     buf[n] = 0;

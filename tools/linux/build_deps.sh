@@ -1,5 +1,5 @@
 #!/bin/bash
-# tools/linux/build_deps.sh <x86_64|aarch64> (inside the build container, tools/linux/appimage.sh): what the AppImage
+# tools/linux/build_deps.sh <x86_64|aarch64|android> (inside the build container, tools/linux/appimage.sh): what the AppImage
 # links against and ships, from pinned sources into build/linux/<arch>/deps - SDL3, an LGPL-only FFmpeg with just what
 # the game's movies need (the configuration of tools/build_deps_windows.sh), shaderc (GLSL -> SPIR-V; Ubuntu 22.04 has
 # none), and the headers: Vulkan (newer than 22.04's), Vulkan Memory Allocator. aarch64 is cross-compiled against
@@ -33,7 +33,18 @@ fetch https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator/archive/
 # cross build: clang targets aarch64 against the sysroot (the arm64 image's -dev packages)
 CMAKE_CROSS=()
 FF_CROSS=()
-if [ "$ARCH" != "$(uname -m)" ]; then
+FF_OS=linux FF_ARCH=$ARCH FF_LINK=(--enable-shared --disable-static) SO=so
+if [ "$ARCH" = android ]; then
+    # android (tools/android/build.sh): arm64, API 33, the NDK's clang ($NDK). FFmpeg and shaderc static: the APK's
+    # libraries can't carry versioned names, and these go into libmain.so (the Makefile's PLATFORM=android)
+    : "${NDK:?android: NDK (the Android NDK)}"
+    NB=$(ls -d "$NDK"/toolchains/llvm/prebuilt/*/bin | head -1)
+    CMAKE_CROSS=(-DCMAKE_TOOLCHAIN_FILE="$NDK/build/cmake/android.toolchain.cmake" -DANDROID_ABI=arm64-v8a
+                 -DANDROID_PLATFORM=android-33 -DANDROID_STL=c++_static)
+    FF_CROSS=(--enable-cross-compile --cc="$NB/aarch64-linux-android33-clang" --cxx="$NB/aarch64-linux-android33-clang++"
+              --nm="$NB/llvm-nm" --ar="$NB/llvm-ar" --ranlib="$NB/llvm-ranlib" --strip="$NB/llvm-strip")
+    FF_OS=android FF_ARCH=aarch64 FF_LINK=(--disable-shared --enable-static) SO=a
+elif [ "$ARCH" != "$(uname -m)" ]; then
     : "${SYSROOT:?cross build: SYSROOT (the arm64 root filesystem)}"
     TC=$W/toolchain.cmake
     cat > "$TC" <<EOF
@@ -74,14 +85,14 @@ if [ ! -f "$P/lib/libSDL3.so" ]; then
     unpack SDL3-3.4.16.tar.gz sdl
     cmake -S "$W/sdl" -B "$W/sdl/build" -G Ninja "${CMAKE_CROSS[@]}" -DCMAKE_BUILD_TYPE=Release \
         -DCMAKE_INSTALL_PREFIX="$P" -DCMAKE_INSTALL_LIBDIR=lib -DSDL_SHARED=ON -DSDL_STATIC=OFF -DSDL_TESTS=OFF \
-        -DSDL_EXAMPLES=OFF -DSDL_RPATH=OFF
+        -DSDL_EXAMPLES=OFF -DSDL_RPATH=OFF -DSDL_ANDROID_JAR=OFF  # (android: its Java goes into the APK as source)
     cmake --build "$W/sdl/build" -j"$JOBS" && cmake --install "$W/sdl/build"
 fi
 
-if [ ! -f "$P/lib/libavcodec.so" ]; then
+if [ ! -f "$P/lib/libavcodec.$SO" ]; then
     unpack ffmpeg-9.0.2.tar.xz ffmpeg
-    (cd "$W/ffmpeg" && ./configure --prefix="$P" "${FF_CROSS[@]}" --arch="$ARCH" --target-os=linux \
-        --enable-shared --disable-static --enable-pic \
+    (cd "$W/ffmpeg" && ./configure --prefix="$P" "${FF_CROSS[@]}" --arch="$FF_ARCH" --target-os="$FF_OS" \
+        "${FF_LINK[@]}" --enable-pic \
         --disable-autodetect --disable-programs --disable-doc --disable-network --disable-avdevice --disable-avfilter \
         --disable-swresample --disable-everything \
         --enable-protocol=file --enable-demuxer=matroska,mov \
@@ -92,16 +103,17 @@ grep -q 'GPL version 3\|--enable-gpl' "$P/lib/pkgconfig/libavcodec.pc" && { echo
 
 # shaderc as one shared library (glslang, SPIRV-Tools inside), the libshaderc_shared the Windows build links too;
 # its DEPS file pins the glslang / SPIRV-Tools / SPIRV-Headers commits (utils/git-sync-deps clones them)
-if [ ! -f "$P/lib/libshaderc_shared.so" ]; then
+SHADERC=$([ "$ARCH" = android ] && echo shaderc_combined || echo shaderc_shared)  # (android: one static library)
+if [ ! -f "$P/lib/lib$SHADERC.$SO" ]; then
     unpack shaderc-2026.3.tar.gz shaderc
     (cd "$W/shaderc" && python3 utils/git-sync-deps)
     cmake -S "$W/shaderc" -B "$W/shaderc/build" -G Ninja "${CMAKE_CROSS[@]}" -DCMAKE_BUILD_TYPE=Release \
         -DCMAKE_INSTALL_PREFIX="$P" -DCMAKE_INSTALL_LIBDIR=lib -DSHADERC_SKIP_TESTS=ON -DSHADERC_SKIP_EXAMPLES=ON \
         -DSHADERC_SKIP_COPYRIGHT_CHECK=ON -DSPIRV_SKIP_TESTS=ON -DSPIRV_SKIP_EXECUTABLES=ON -DENABLE_GLSLANG_BINARIES=OFF \
         -DSPIRV_TOOLS_BUILD_STATIC=ON -DBUILD_SHARED_LIBS=OFF
-    cmake --build "$W/shaderc/build" --target shaderc_shared -j"$JOBS"
+    cmake --build "$W/shaderc/build" --target $SHADERC -j"$JOBS"
     mkdir -p "$P/include/shaderc"
     cp "$W/shaderc/libshaderc/include/shaderc/"*.h "$P/include/shaderc/"
-    cp -P "$W/shaderc/build/libshaderc/libshaderc_shared.so"* "$P/lib/"
+    cp -P "$W/shaderc/build/libshaderc/lib$SHADERC.$SO"* "$P/lib/"
 fi
-echo "deps ($ARCH): $(cd "$P/lib" && ls *.so | tr '\n' ' ')"
+echo "deps ($ARCH): $(cd "$P/lib" && ls *.so *.a 2>/dev/null | tr '\n' ' ')"

@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Savage Wind for Android (tools/android/build.sh): arm64, Android 13+ (API 33: the Vulkan 1.3 the renderer links),
+     landscape, a controller expected. MANAGE_EXTERNAL_STORAGE: /sdcard/SavageWind as the data folder (the activity
+     asks once). Libraries extracted on install, so they needn't be stored aligned in the APK. -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android" package="savagewind.app"
+          android:installLocation="auto">
+  <uses-sdk android:minSdkVersion="33" android:targetSdkVersion="34"/>
+  <uses-feature android:name="android.hardware.vulkan.version" android:version="0x403000" android:required="true"/>
+  <uses-feature android:name="android.hardware.gamepad" android:required="false"/>
+  <uses-feature android:name="android.hardware.touchscreen" android:required="false"/>
+  <uses-feature android:name="android.hardware.usb.host" android:required="false"/>
+  <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE"/>
+  <uses-permission android:name="android.permission.VIBRATE"/>
+  <application android:label="Savage Wind" android:icon="@mipmap/ic_launcher" android:extractNativeLibs="true"
+               android:hardwareAccelerated="true" android:appCategory="game" android:isGame="true"
+               android:theme="@android:style/Theme.NoTitleBar.Fullscreen">
+    <activity android:name=".SavageWindActivity" android:exported="true" android:launchMode="singleInstance"
+              android:alwaysRetainTaskState="true" android:screenOrientation="sensorLandscape"
+              android:preferMinimalPostProcessing="true"
+              android:configChanges="layoutDirection|locale|grammaticalGender|fontScale|fontWeightAdjustment|orientation|uiMode|screenLayout|screenSize|smallestScreenSize|keyboard|keyboardHidden|navigation">
+      <intent-filter>
+        <action android:name="android.intent.action.MAIN"/>
+        <category android:name="android.intent.category.LAUNCHER"/>
+      </intent-filter>
+    </activity>
+  </application>
+</manifest>

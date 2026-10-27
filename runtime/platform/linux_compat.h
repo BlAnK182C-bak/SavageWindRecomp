@@ -4,6 +4,9 @@
 #include <stdint.h>
 #include <string.h>
 #include <sys/random.h>
+#ifndef __GLIBC_PREREQ
+#define __GLIBC_PREREQ(major, minor) 1  // (Android: bionic has them all)
+#endif
 
 #if !__GLIBC_PREREQ(2, 38)
 static inline size_t strlcpy(char *d, const char *s, size_t n) {

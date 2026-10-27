@@ -10,6 +10,11 @@
 #else
 #include <dlfcn.h>
 #endif
+#ifdef __ANDROID__
+#include <SDL3/SDL.h>
+#include <fcntl.h>
+#include <sys/stat.h>
+#endif
 
 #include "game_sites.h"
 #include "paths.h"
@@ -154,7 +159,37 @@ bool gamelib_present(const char *game_dir) {
     return false;
 }
 
+#ifdef __ANDROID__
+// Shared storage, where the player copies the library with the game files, is mounted noexec: it's loaded from a copy
+// in the app's internal storage, made again when the one copied over differs (size, time).
+static const char *loadable_copy(const char *path) {
+    static char dst[1100], tmp[1110];
+    const char *dir = SDL_GetAndroidInternalStoragePath();
+    struct stat a, b;
+    if (!dir || stat(path, &a) != 0) return path;
+    snprintf(dst, sizeof dst, "%s/" GAMELIB_NAME, dir);
+    if (stat(dst, &b) == 0 && b.st_size == a.st_size && b.st_mtime == a.st_mtime) return dst;
+    snprintf(tmp, sizeof tmp, "%s.tmp", dst);
+    FILE *in = fopen(path, "rb"), *out = fopen(tmp, "wb");
+    bool ok = in && out;
+    static char buf[1 << 20];
+    for (size_t n; ok && (n = fread(buf, 1, sizeof buf, in)) > 0;) ok = fwrite(buf, 1, n, out) == n;
+    if (in) fclose(in);
+    if (out && fclose(out)) ok = false;
+    struct timespec t[2] = {a.st_atim, a.st_mtim};
+    if (!ok || utimensat(AT_FDCWD, tmp, t, 0) || rename(tmp, dst)) {
+        LOG("[gamelib] can't copy %s to %s\n", path, dst);
+        remove(tmp);
+        return path;
+    }
+    return dst;
+}
+#endif
+
 static const GameLibTables *open_lib(const char *path) {
+#ifdef __ANDROID__
+    path = loadable_copy(path);
+#endif
 #ifdef _WIN32
     HMODULE h = LoadLibraryA(path);
     if (!h) { snprintf(g_error, sizeof g_error, "can't load %s (error %lu)", path, GetLastError()); return NULL; }

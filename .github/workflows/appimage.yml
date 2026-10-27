@@ -4,7 +4,7 @@ name: Linux AppImage
 
 on:
   push:
-    tags: ['*', '!android-*']  # (android-*: android-probe.yml)
+    tags: ['*', '!android-*']  # (android-*: android.yml)
 
 permissions:
   contents: write

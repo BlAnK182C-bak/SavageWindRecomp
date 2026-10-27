@@ -1,5 +1,8 @@
 // Savage Wind entry: load modules, set up the kernel, run nn::init::Start on the main thread.
 #include <SDL3/SDL.h>
+#ifdef __ANDROID__
+#include <SDL3/SDL_main.h>  // (main becomes SDL_main, which SDL's Java activity calls in libmain.so)
+#endif
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -67,8 +70,15 @@ static void rtld_fini_main(Cpu *c) {
 
 // Claim the guest address range before anything else can map there. The host allocator places
 // regions at random addresses in the same window; on a collision, re-exec for a fresh layout.
+// Android can't re-exec an app (its layout is the zygote's, the same for every start until the phone restarts): main
+// says so instead. The window sits lower there, clear of the zygote's (runtime/rt.h GUEST_BASE).
+static bool g_guest_taken;
 __attribute__((constructor(101))) static void reserve_guest_space(void) {
     if (plat_reserve_guest(GUEST_LO, GUEST_HI)) return;
+#ifdef __ANDROID__
+    g_guest_taken = true;
+    return;
+#endif
     const char *tries = getenv("SAVAGEWIND_REEXEC");
     int n = tries ? atoi(tries) : 0;
     if (n >= 20) {
@@ -317,6 +327,14 @@ bool launcher_config_key_held(void);  // (macOS: Option held while the app opens
 
 int main(int argc, char **argv) {
     plat_init();
+    if (g_guest_taken) {
+        char msg[300];
+        snprintf(msg, sizeof msg, "Savage Wind needs the addresses %llx-%llx for the game, and something else took them. "
+                 "Restart the phone and open Savage Wind again.", GUEST_LO, GUEST_HI);
+        fprintf(stderr, "FATAL: %s\n", msg);
+        SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "Savage Wind", msg, NULL);
+        return 1;
+    }
 #ifdef _WIN32
     setvbuf(stderr, NULL, _IONBF, 0);  // the Windows CRT treats _IOLBF as full buffering
 #else
@@ -351,6 +369,10 @@ int main(int argc, char **argv) {
     // A plain start goes straight into the game once the game files are set up and the game code built from them
     // matches this build; the start screen only when there is something to set up, or when asked for.
     int mode = config ? LAUNCHER_CONFIG : skip_launcher || launcher_game_ready(root) ? LAUNCHER_NONE : LAUNCHER_SETUP;
+#ifdef __ANDROID__
+    // (a phone has no second entry for the configuration screen: it opens on the start screen, Play from there)
+    if (mode == LAUNCHER_NONE && !skip_launcher) mode = LAUNCHER_CONFIG;
+#endif
     // (tests of the start screen - screenshots, setup and delete runs - show it: the configuration screen, or
     // SAVAGEWIND_LAUNCHER_MODE=setup / config)
     const char *test_mode = getenv("SAVAGEWIND_LAUNCHER_MODE");

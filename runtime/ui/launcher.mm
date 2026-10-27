@@ -1484,6 +1484,29 @@ extern "C" void launcher_run(const char *root, int mode) {
                     }
 #endif
                 }
+#ifdef __ANDROID__
+                // A phone has no folder picker here and no compiler: the game files, and the game code built from them on
+                // a PC (tools/android/gamelib.sh), are copied into the game folder by hand, then checked
+                if (!ready) {
+                    opt_section("Your copy of the game");
+                    std::string dir = g_root[0] == '/' ? g_root : std::string(rt_data_root()) + "/" + g_root;
+                    ImGui::PushTextWrapPos(0);
+                    ImGui::TextColored(ImVec4(0.86f, 0.85f, 0.80f, 1), "%s\n\n%s\n%s\n\n%s",
+                                       tr("Copy these into the folder below (from a PC over USB, or with a file manager), "
+                                          "then check again:"),
+                                       tr("- exefs and romfs: your own copy of the game, extracted (aoc1, aoc2: its DLC)"),
+                                       tr("- swgame.so and swgame.so.id: the game code, built from those files on a PC "
+                                          "with tools/android/gamelib.sh"),
+                                       dir.c_str());
+                    ImGui::PopTextWrapPos();
+                    if (opt_action("Check again", trv(status).c_str(), "", true)) {
+                        status = check_game_files(g_root);
+                        if (status.empty() && g_setup_only) play = true;
+                        else if (status.empty()) page = MAIN;
+                    }
+                    first_row();
+                }
+#else
                 if (!ready || !g_confirm_delete) {  // choose the folder, set up (again: from it, or the game code alone)
                     opt_section(!ready ? "Your copy of the game" : "Set up again");
                     if (busy) opt_disable_next();
@@ -1517,6 +1540,7 @@ extern "C" void launcher_run(const char *root, int mode) {
                     }
                     if (!ready) files_gb = -1;  // (re-measured after a setup)
                 }
+#endif
                 if (!job_line.empty()) {  // the current step / result
                     ImGui::Dummy(ImVec2(0, 14 * sc));
                     ImGui::PushTextWrapPos(0);

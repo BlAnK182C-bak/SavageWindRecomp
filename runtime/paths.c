@@ -122,6 +122,24 @@ void rt_paths_init(void) {
 const char *rt_data_root(void) { return g_root; }
 
 bool rt_resource(const char *name, const char *dev_rel, char *out, size_t n) {
+#ifdef __ANDROID__
+    // The APK's assets (tools/android/build.sh: the fonts, the icon), written out once into the app's own storage for
+    // the code that opens them by path. (SDL reads a relative path from the assets.)
+    (void)dev_rel;
+    const char *dir = SDL_GetAndroidInternalStoragePath();
+    char p[1100];
+    if (!name || !dir) return false;
+    snprintf(p, sizeof p, "%s/%s", dir, name);
+    if (!exists(p)) {
+        size_t sz;
+        void *data = SDL_LoadFile(name, &sz);
+        if (!data) return false;
+        bool ok = SDL_SaveFile(p, data, sz);
+        SDL_free(data);
+        if (!ok) return false;
+    }
+    return (size_t)snprintf(out, n, "%s", p) < n;
+#endif
     char c[4][1100] = {{0}};
     if (name) {
         snprintf(c[0], sizeof c[0], "%s" SEP "%s", g_exe_dir, name);
