@@ -151,15 +151,17 @@ def main():
     ap.add_argument('--simd', choices=('asm', 'c'),
                     default='asm' if platform.machine().lower() in ('arm64', 'aarch64') else 'c')
     ap.add_argument('--json')
+    ap.add_argument('--base', type=lambda s: int(s, 16), default=layout.MODULES_LO,
+                    help='guest base (GUEST_BASE in runtime/rt.h; gen.py --base): Android 0x1000000000')
     args = ap.parse_args()
 
     present = sorted(f for f in os.listdir(args.exefs) if not f.endswith('.npdm'))
     print(f'exefs: {args.exefs}\n  files: {present}')
-    mods = layout.compute(args.exefs)
+    mods = layout.compute(args.exefs, args.base)
     bases = {n: b for n, b, s, i in mods}
     print('layout (tools/layout.py, what `make gen` and the runtime use):')
     layout.show(mods)
-    why = layout.problems(mods)
+    why = layout.problems(mods, args.base)
     print(f'  {"CANNOT LOAD: " + "; ".join(why) if why else "loads"}')
     version = None
     if 'main' in bases:  # (tools/game_sites.py VERSIONS)

@@ -384,6 +384,10 @@ bool gamebuild_run(const char *game_dir, const GameBuildOpts *o, char *why, size
         add(&a, "layout");
         add(&a, exefs);
         add(&a, work);
+        char base[24];  // (where this runtime has the guest, GUEST_BASE: the code is generated for it)
+        snprintf(base, sizeof base, "%llx", (unsigned long long)GUEST_BASE);
+        add(&a, "--base");
+        add(&a, base);
         PlatProc p = spawn(a.v, log);
         args_free(&a);
         int r = p ? wait_for(p) : 255;

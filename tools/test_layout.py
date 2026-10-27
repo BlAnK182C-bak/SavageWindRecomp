@@ -10,6 +10,8 @@ BOTW 1.8.2's do. Then it checks:
 - `gen.py all`: layout.txt / layout.c match, every generated function is where layout + symbol says, a module gone
   from the exefs loses its old folder; `gen.py <module>` with that layout.txt writes the same table, and refuses a
   file other than the one the layout was made from;
+- `--base` (Android's 0x10_0000_0000 instead of the desktop base): the same layout and functions, shifted; a base that is
+  misaligned or whose window passes 2^39 is refused, and so is --base on a single module;
 - sw_probe.py reports the same addresses;
 - jump tables (jump_table_module(): no layout involved): gen.py keeps a function with tables whole (an adr of a table
   base inside it is a label, not a new function), finds each table's cases wherever the base and the cases are in the
@@ -403,6 +405,29 @@ def main():
     check('game_version[] = "";' in c and 'game_site_count = 0;' in c, 'layout.c without game sites (--no-sites)')
     r = run('gen.py', 'layout', exefs, os.path.join(root, 'nosites'), ok=False)
     check('not a version Savage Wind knows' in r.stderr, 'a main module of no known version: refused')
+
+    # ---- gen.py --base: the whole layout moves, nothing else
+    ab = 0x1000000000
+    gen_ab = os.path.join(root, 'gen_ab')
+    run('gen.py', 'all', exefs, gen_ab, '--simd', 'c', '--no-sites', '--base', hex(ab))
+    lay_ab = layout.read(os.path.join(gen_ab, 'layout.txt'))
+    check(lay_ab[0][1] == ab and [(n, b - ab, s, i) for n, b, s, i in lay_ab] ==
+          [(n, b - layout.MODULES_LO, s, i) for n, b, s, i in lay], f'--base: main at {ab:#x}, the rest as before')
+    check(layout.problems(lay_ab, ab) == [], 'loadable at that base')
+    c_ab = open(os.path.join(gen_ab, 'layout.c')).read()
+    for n, b, s, i in lay_ab:
+        check(f'{{"{n}", {b:#x}ull, {s:#x}ull, ' in c_ab, f'--base: layout.c entry for {n}')
+        check(table(os.path.join(gen_ab, n, f'{n}_table.c')) == sorted(b + off for off in fns[n].values()),
+              f'--base: {n}: generated functions at its base + symbol')
+    check(open(os.path.join(gen_ab, 'main', 'main_000.c')).read() != open(os.path.join(gen, 'main', 'main_000.c')).read(),
+          '--base: the generated code has the base in it')
+    for bad in ('0x1000001000', '0x7f00000000'):  # (not 2 MiB aligned; its window ends past 2^39)
+        r = run('gen.py', 'layout', exefs, os.path.join(root, 'bad'), '--no-sites', '--base', bad, ok=False)
+        check('GUEST_BASE' in r.stderr, f'--base {bad}: refused')
+    r = run('gen.py', 'subsdk0', os.path.join(exefs, 'subsdk0'), os.path.join(gen, 'layout.txt'), root, '--base', hex(ab),
+            ok=False)
+    check('--base is for layout / all' in r.stderr, 'a single module takes no --base')
+    shutil.rmtree(gen_ab)
 
     # ---- gen.py <module> with layout.txt
     one = os.path.join(root, 'one')

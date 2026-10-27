@@ -11,23 +11,37 @@
 #define FATAL(...) (fprintf(stderr, "FATAL: " __VA_ARGS__), rt_fatal_trace())
 
 // ---- address space layout (guest addresses == host addresses)
-// macOS reserves 0x2_0000_0000-0x70_0000_0000, and guest addresses must fit in 39 bits, so the
-// guest lives in a 12.5 GB window at 0x70_0000_0000 claimed at startup (see main.c).
-#define GUEST_LO     0x7000000000ull
-#define GUEST_HI     0x7320000000ull
+// The guest lives in a 12.5 GB window at GUEST_BASE claimed at startup (see main.c); it has to fit in 39 bits, the
+// Switch's address space. macOS reserves 0x2_0000_0000-0x70_0000_0000, so there it sits at 0x70_0000_0000 (the base
+// the generator defaults to). An Android app process has no room there: Scudo's primary reserve maps everything from
+// 0x6f_f8f1_7000 on up through that window, and the free stretch below 2^39 is 0x1_0000_0000-0x5c_b067_c000, so
+// Android puts it at 0x10_0000_0000. The generated code has the base baked in: tools/gen.py --base (`make gen
+// GENARGS="--base 0x1000000000"`) for a runtime built with another GUEST_BASE; the loader refuses a library whose
+// modules lie outside [MAIN_BASE, MODULES_END).
+#ifndef GUEST_BASE
+#ifdef __ANDROID__
+#define GUEST_BASE   0x1000000000ull
+#else
+#define GUEST_BASE   0x7000000000ull
+#endif
+#endif
+_Static_assert((GUEST_BASE & 0x1FFFFF) == 0 && GUEST_BASE + 0x0320000000ull <= 1ull << 39,
+               "the guest window is 2 MiB aligned and inside 39 bits");
+#define GUEST_LO     GUEST_BASE
+#define GUEST_HI     (GUEST_BASE + 0x0320000000ull)
 // The exefs modules (main, subsdk0..9, sdk) sit back to back from MAIN_BASE, main first, as tools/layout.py
 // places them; the game code library says where each one is (runtime/gamelib.h). Both bounds: tools/layout.py too.
-#define MAIN_BASE    0x7000000000ull
-#define MODULES_END  0x7080000000ull
-#define HLE_BASE     0x7080000000ull   // fake addresses for host-implemented functions
+#define MAIN_BASE    GUEST_BASE
+#define MODULES_END  (GUEST_BASE + 0x0080000000ull)
+#define HLE_BASE     (GUEST_BASE + 0x0080000000ull)   // fake addresses for host-implemented functions
 #define HLE_SIZE     0x0000100000ull
-#define TLS_BASE     0x7090000000ull
+#define TLS_BASE     (GUEST_BASE + 0x0090000000ull)
 #define TLS_SIZE     0x0000100000ull
-#define HLE_HEAP     0x7092000000ull   // guest-visible memory owned by host code
+#define HLE_HEAP     (GUEST_BASE + 0x0092000000ull)   // guest-visible memory owned by host code
 #define HLE_HEAP_SIZE 0x000E000000ull
-#define ALIAS_BASE   0x7100000000ull   // alias region (svcMapMemory targets)
+#define ALIAS_BASE   (GUEST_BASE + 0x0100000000ull)   // alias region (svcMapMemory targets)
 #define ALIAS_SIZE   0x0100000000ull
-#define HEAP_BASE    0x7240000000ull
+#define HEAP_BASE    (GUEST_BASE + 0x0240000000ull)
 #define HEAP_MAX     0x00D0000000ull   // 3.25 GB
 
 // ---- loader.c

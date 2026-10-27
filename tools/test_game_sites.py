@@ -65,21 +65,21 @@ def body(pc, data, got, callee):
                'page': (2, 'ref', data & ~0xFFF), 'got': (7, 'got', None)}
 
 
-def image(fn_at, data, got, callee, got_value, filler=0x40):
-    """An NSO-like main module: .text (filler, the function, filler), .data holding the GOT entry"""
+def image(fn_at, data, got, callee, got_value, filler=0x40, base=BASE):
+    """An NSO-like main module at base: .text (filler, the function, filler), .data holding the GOT entry"""
     text_size = 0x1000
     words = [NOP] * (text_size // 4)
-    fw, sites = body(BASE + fn_at, data, got, callee)
+    fw, sites = body(base + fn_at, data, got, callee)
     words[fn_at // 4:fn_at // 4 + len(fw)] = fw
     for i in range(filler // 4):  # (something else that looks a bit alike: the pattern must not stop there)
         words[i] = STP if i % 7 == 0 else MOV_FP if i % 7 == 1 else NOP
     data_off, size = 0x2000, 0x4000
     img = bytearray(size)
     struct.pack_into(f'<{len(words)}I', img, 0, *words)
-    struct.pack_into('<Q', img, got - BASE, got_value)  # (module-relative, as before relocation)
+    struct.pack_into('<Q', img, got - base, got_value)  # (module-relative, as before relocation)
     nso = SimpleNamespace(image=bytes(img), text=(0, text_size), data=(data_off, 0x1000), size=size,
                           build_id='00' * 16)
-    return gs.Main(nso), sites
+    return gs.Main(nso, base), sites
 
 
 def main():
@@ -143,6 +143,23 @@ def main():
             check(True, '')
         gs.SITES = [gs.Site('fn', 'call', [('d503201f 12345678', 0), (pat, 5)], 0)]  # (a version's own pattern)
         check(gs.resolve(b) == {'fn': 0x7000000100}, 'a list of patterns: the first that finds one place')
+        # another base (gen.py --base, Android): the same code with every address that far off. KNOWN keeps the
+        # desktop addresses, and the self-check and the fallback follow the base
+        ab = 0x1000000000
+        c, _ = image(0x800, ab + 0x2f30, ab + 0x2b08, ab + 0x100, 0x3ff0, base=ab)
+        gs.SITES = sites
+        want = {'fn': ab + 0x800, 'callee': ab + 0x100, 'data': ab + 0x2f30}
+        check(gs.resolve(c) == want, f'new build at another base: {gs.resolve(c)}')
+        check(gs.resolve(c, {'fn': BASE + 0x800, 'callee': BASE + 0x100, 'data': BASE + 0x2f30}) == want,
+              'KNOWN (at MAIN_BASE) agrees with the pattern at another base')
+        try:
+            gs.resolve(c, {'fn': ab + 0x800})
+            check(False, 'KNOWN is at MAIN_BASE: a table in the new base\'s addresses disagrees')
+        except gs.SiteError:
+            check(True, '')
+        gs.SITES = [gs.Site('fn', 'code', 'd503201f d503201f', 0)]  # (several places: the table, shifted)
+        check(gs.resolve(c, {'fn': BASE + 0x800}, lambda s: None) == {'fn': ab + 0x800},
+              'the fallback table follows the base')
         gs.SITES = [gs.Site('fn', 'code', 'd503201f d503201f', 0)]  # (several places)
         logs = []
         check(gs.resolve(b, {'fn': BASE + 0x800}, logs.append) == {'fn': BASE + 0x800} and logs,

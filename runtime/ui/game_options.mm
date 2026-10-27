@@ -32,6 +32,7 @@ extern "C" {
 #include "../input_bind.h"
 #include "../language.h"
 #include "../game_sites.h"
+#include "../rt.h"
 #include "../nvn/output_scale.h"
 #include "../settings.h"
 #include "../window_size.h"
@@ -844,7 +845,7 @@ extern "C" void rt_title_menu_prepare(void) {
     for (uint64_t p = g_site.main_data; p + 0x10 <= g_site.main_end; p += 8) {
         uint32_t count = rd32(p);
         uint64_t ids = rd64(p + 8);
-        if (count < 2 || count > 7 || ids < 0x7000000000ull || ids + 4 * count > g_site.main_end || (ids & 3))  // (in main)
+        if (count < 2 || count > 7 || ids < MAIN_BASE || ids + 4 * count > g_site.main_end || (ids & 3))  // (in main)
             continue;
         bool menu = true;
         for (uint32_t i = 0; i < count && menu; i++) {

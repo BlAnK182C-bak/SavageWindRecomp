@@ -3,7 +3,8 @@
 The Switch loader puts a process's modules back to back in load order (rtld, main, subsdk0..9, sdk), each one as
 big as its image (text, rodata, data + bss) rounded up to a 4 KiB page, from a 2 MiB-aligned start. Savage Wind does
 the same without rtld, whose work the runtime does itself (runtime/loader.c, runtime/main.c), so main starts the
-module area at MAIN_BASE and the modules may be any size the area holds.
+module area at MAIN_BASE and the modules may be any size the area holds. The base is the runtime's GUEST_BASE
+(runtime/rt.h: 0x70_0000_0000, the default here; Android 0x10_0000_0000): `gen.py --base`.
 
 The generated code has these addresses baked in, so everything else follows what this computes:
 - `gen.py layout` / `gen.py all` write it next to the generated code: layout.txt (read back by gen.py for each
@@ -11,15 +12,17 @@ The generated code has these addresses baked in, so everything else follows what
 - runtime/loader.c loads each module where the library's layout says (runtime/gamelib.h);
 - sw_probe.py reports it.
 
-Usage: layout.py <exefs_dir> [outdir]   (prints the layout; with outdir it also writes layout.txt and layout.c)
+Usage: layout.py <exefs_dir> [outdir] [--base <hex>]   (prints the layout; with outdir it also writes layout.txt and
+       layout.c)
 """
 import os
 import sys
 
 from nso import header
 
-MODULES_LO = 0x7000000000  # runtime/rt.h MAIN_BASE (2 MiB aligned)
-MODULES_HI = 0x7080000000  # runtime/rt.h MODULES_END: the loader refuses a module past it
+MODULES_LO = 0x7000000000  # runtime/rt.h MAIN_BASE on desktop (2 MiB aligned): the default base
+MODULES_SIZE = 0x80000000  # runtime/rt.h MODULES_END - MAIN_BASE: the loader refuses a module past it
+WINDOW_SIZE = 0x320000000  # runtime/rt.h GUEST_HI - GUEST_LO: the whole guest window has to fit in 39 bits
 PAGE = 0x1000
 LOAD_ORDER = ['main'] + [f'subsdk{i}' for i in range(10)] + ['sdk']
 
@@ -52,9 +55,9 @@ def foreign(exefs):
     return [n for n in LOAD_ORDER if n.startswith('subsdk') and n not in known and os.path.isfile(os.path.join(exefs, n))]
 
 
-def compute(exefs):
-    """[(name, base, size, build_id)] of the modules in an exefs folder, in load order."""
-    out, base = [], MODULES_LO
+def compute(exefs, base=MODULES_LO):
+    """[(name, base, size, build_id)] of the modules in an exefs folder, in load order, from `base`."""
+    out = []
     skip = foreign(exefs)
     for name in skip:
         print(f"layout: {name} is not one of the game's modules (a mod?): left out", file=sys.stderr)
@@ -67,20 +70,22 @@ def compute(exefs):
     return out
 
 
-def problems(layout):
-    """Why the runtime could not load this layout (empty: it can)."""
+def problems(layout, base=MODULES_LO):
+    """Why the runtime (built for this base) could not load this layout (empty: it can)."""
     names = [m[0] for m in layout]
     why = [f'no {n} module' for n in ('main', 'sdk') if n not in names]
-    end = layout[-1][1] + layout[-1][2] if layout else MODULES_LO
-    if end > MODULES_HI:
-        why.append(f'the modules end at {end:#x}, past {MODULES_HI:#x} (MODULES_END in runtime/rt.h)')
+    if base % 0x200000 or base + WINDOW_SIZE > 1 << 39:
+        why.append(f'the base {base:#x} is not 2 MiB aligned or its window ends past 2^39 (GUEST_BASE in runtime/rt.h)')
+    end = layout[-1][1] + layout[-1][2] if layout else base
+    if end > base + MODULES_SIZE:
+        why.append(f'the modules end at {end:#x}, past {base + MODULES_SIZE:#x} (MODULES_END in runtime/rt.h)')
     return why
 
 
-def checked(exefs):
+def checked(exefs, base=MODULES_LO):
     """compute(), or LayoutError if the runtime could not load it."""
-    layout = compute(exefs)
-    why = problems(layout)
+    layout = compute(exefs, base)
+    why = problems(layout, base)
     if why:
         raise LayoutError(f'{exefs}: ' + '; '.join(why))
     return layout
@@ -141,12 +146,17 @@ def show(layout):
 
 
 if __name__ == '__main__':
-    if len(sys.argv) not in (2, 3):
+    args, base = sys.argv[1:], MODULES_LO
+    if '--base' in args:
+        i = args.index('--base')
+        base = int(args[i + 1], 16)
+        del args[i:i + 2]
+    if len(args) not in (1, 2):
         sys.exit(__doc__)
-    lay = compute(sys.argv[1])
+    lay = compute(args[0], base)
     show(lay)
-    why = problems(lay)
+    why = problems(lay, base)
     if why:
         sys.exit('layout: ' + '; '.join(why))
-    if len(sys.argv) == 3:
-        write(lay, sys.argv[2])
+    if len(args) == 2:
+        write(lay, args[1])

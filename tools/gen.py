@@ -1,8 +1,8 @@
 """Generate C for a whole NSO module.
 
 Usage: gen.py <name> <nso> <layout.txt> <outdir> [--hle hle_symbols.txt] [--chunk N] [--simd asm|c]
-       gen.py layout <exefs> <outdir>
-       gen.py all <exefs> <outdir> [--hle hle_symbols.txt] [--simd asm|c]
+       gen.py layout <exefs> <outdir> [--base <hex>]
+       gen.py all <exefs> <outdir> [--hle hle_symbols.txt] [--simd asm|c] [--base <hex>]
 
 The module's guest address comes from layout.txt, which `gen.py layout` writes (with layout.c) from the exefs
 (tools/layout.py). `all` does that and then generates every module into <outdir>/<name>, with --hle for all of them
@@ -12,6 +12,10 @@ The main module has to be a game version Savage Wind supports (tools/game_sites.
 up there, for tools/patches.py and for the runtime (layout.c). --any-version takes any main module whose sites the
 patterns all find (bringing up a new version); --no-sites generates without sites or patches (the made-up modules
 of tools/test_layout.py).
+
+--base: the guest address of the first module, GUEST_BASE of the runtime that will load the code (runtime/rt.h; 2 MiB
+aligned, the guest window below 2^39). The default is the desktop one, 0x7000000000; Android's is 0x1000000000. Only
+layout / all take it: a single module takes its address from layout.txt.
 
 --simd: FP/SIMD/CRC32 as AArch64 inline asm (default on arm64 hosts) or portable C (default elsewhere).
 """
@@ -707,17 +711,20 @@ def main():
     ap.add_argument('--big-fn', type=int, default=100000)  # bytes of C from which a function gets its own file
     ap.add_argument('--limit', type=int, default=0)
     ap.add_argument('--any-version', action='store_true')  # (a main module of a version not supported yet)
+    ap.add_argument('--base', type=lambda s: int(s, 16))  # (layout / all: where main goes; default layout.MODULES_LO)
     ap.add_argument('--no-sites', action='store_true')  # (made-up modules, tools/test_layout.py: no sites, no patches)
     ap.add_argument('--simd', choices=('asm', 'c'),
                     default='asm' if platform.machine().lower() in ('arm64', 'aarch64') else 'c')
     args = ap.parse_args()
     if len(args.paths) != (1 if args.name in ('layout', 'all') else 2):
         ap.error('wrong number of arguments')
+    if args.base is not None and args.name not in ('layout', 'all'):
+        ap.error('--base is for layout / all: a module takes its address from layout.txt')
 
     try:
         if args.name in ('layout', 'all'):
             exefs, outdir = args.input, args.paths[0]
-            lay = layout.checked(exefs)
+            lay = layout.checked(exefs, layout.MODULES_LO if args.base is None else args.base)
             layout.show(lay)
             main_base = next(b for n, b, *_ in lay if n == 'main')
             version, sites = main_sites(Nso(os.path.join(exefs, 'main')), main_base, args)

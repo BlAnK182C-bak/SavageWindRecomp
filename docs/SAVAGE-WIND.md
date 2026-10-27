@@ -1274,6 +1274,13 @@ se carga, su trabajo lo hace el runtime), cada imagen (text, rodata, data + bss)
 desde `MAIN_BASE` (0x70_0000_0000) y sin pasar de `MODULES_END` (0x70_8000_0000: 2 GiB para módulos).
 Ambos límites están en `runtime/rt.h` y en `tools/layout.py`.
 
+La base es `GUEST_BASE` (`runtime/rt.h`; todo el espacio del guest, 12,5 GB, cuelga de ella y cabe en 39 bits).
+En Android es 0x10_0000_0000: en un proceso de app el allocator Scudo ya ocupa 0x6f_f8f1_7000 en adelante, justo
+la ventana de escritorio. El código generado lleva la base metida, así que hay que generarlo con la misma:
+`gen.py all|layout ... --base 0x1000000000` (`make gen GENARGS="--base 0x1000000000"`); sin `--base` sale la de
+escritorio, byte a byte lo de siempre. La pantalla de setup pasa `--base` con el `GUEST_BASE` del runtime. La tabla
+`KNOWN` de `tools/game_sites.py` se queda en las direcciones de escritorio; la comprobación se hace relativa a la base.
+
 - `make gen` (`gen.py all`) escribe `generated/layout.txt` y `generated/layout.c` y genera cada módulo en
   `generated/<módulo>/`. `gen.py <módulo> <nso> <layout.txt> <salida>` genera uno solo con esas
   direcciones y se niega si el NSO no es el del layout (build id).

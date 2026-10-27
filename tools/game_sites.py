@@ -38,7 +38,8 @@ import struct
 import sys
 from collections import namedtuple
 
-MAIN_BASE = 0x7000000000  # (tools/layout.py: main is the first module)
+MAIN_BASE = 0x7000000000  # the base KNOWN's addresses are at (tools/layout.py: main is the first module); main at
+                          # another base (gen.py --base: Android) has every site that far off, and KNOWN keeps as is
 
 # name, version, main module build id (the first 8 bytes; tools/sw_probe.py prints it), supported. One that isn't
 # supported yet is known but refused by the setup until its sites are checked.
@@ -527,7 +528,7 @@ def common_pattern(ma, a, mb, b, kind='code', shortest=8, longest=32):
 
 def resolve(main, known=None, log=None):
     """{site name: address} for this main module. known: the addresses listed for its build (or None)."""
-    out, problems = {}, []
+    out, problems, shift = {}, [], main.base - MAIN_BASE
     for s in SITES:
         try:
             found, hits = main.locate(s)
@@ -535,6 +536,7 @@ def resolve(main, known=None, log=None):
             problems.append(f'{s.name}: {e}')
             continue
         k = (known or {}).get(s.name)
+        k = None if k is None else k + shift
         if found is not None and k is not None and found != k:
             raise SiteError(f'{s.name}: the pattern finds {found:#x}, the table says {k:#x}')
         if found is None and k is None:
