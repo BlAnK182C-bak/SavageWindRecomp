@@ -23,6 +23,7 @@
 #include <SDL3/SDL.h>
 
 #include "glyphs.h"
+#include "shapes.h"
 #include "../input_bind.h"
 #include "../paths.h"
 #include "../rt.h"
@@ -100,43 +101,6 @@ static void bc4_encode(const uint8_t *img, uint32_t wb, uint32_t hb, uint8_t *li
 typedef struct { float a[CELL * CELL]; } Canvas;
 typedef struct { float cx, cy, s, w; } Box;  // the original glyph's centre, height and width
 
-typedef enum { SH_CIRCLE, SH_BOX, SH_SEG, SH_TRI } ShapeType;
-typedef struct { ShapeType t; float p[6], r, ring; } Shape;  // ring > 0: only a band that thick on its edge
-
-static float maxf(float a, float b) { return a > b ? a : b; }
-static float minf(float a, float b) { return a < b ? a : b; }
-static float clampf(float v, float lo, float hi) { return v < lo ? lo : v > hi ? hi : v; }
-
-static float sd_seg(float px, float py, float ax, float ay, float bx, float by) {
-    float dx = bx - ax, dy = by - ay, h = clampf(((px - ax) * dx + (py - ay) * dy) / maxf(dx * dx + dy * dy, 1e-6f), 0, 1);
-    return hypotf(px - ax - dx * h, py - ay - dy * h);
-}
-
-static float sd(const Shape *s, float x, float y) {
-    float d = 0;
-    switch (s->t) {
-    case SH_CIRCLE: d = hypotf(x - s->p[0], y - s->p[1]) - s->r; break;
-    case SH_BOX: {  // centre, half sizes, corner radius r
-        float qx = fabsf(x - s->p[0]) - s->p[2] + s->r, qy = fabsf(y - s->p[1]) - s->p[3] + s->r;
-        d = hypotf(maxf(qx, 0), maxf(qy, 0)) + minf(maxf(qx, qy), 0) - s->r;
-        break;
-    }
-    case SH_SEG: d = sd_seg(x, y, s->p[0], s->p[1], s->p[2], s->p[3]) - s->r; break;
-    case SH_TRI: {  // three corners (any order)
-        float e = minf(minf(sd_seg(x, y, s->p[0], s->p[1], s->p[2], s->p[3]), sd_seg(x, y, s->p[2], s->p[3], s->p[4], s->p[5])),
-                       sd_seg(x, y, s->p[4], s->p[5], s->p[0], s->p[1]));
-        float c1 = (s->p[2] - s->p[0]) * (y - s->p[1]) - (s->p[3] - s->p[1]) * (x - s->p[0]);
-        float c2 = (s->p[4] - s->p[2]) * (y - s->p[3]) - (s->p[5] - s->p[3]) * (x - s->p[2]);
-        float c3 = (s->p[0] - s->p[4]) * (y - s->p[5]) - (s->p[1] - s->p[5]) * (x - s->p[4]);
-        bool in = (c1 >= 0 && c2 >= 0 && c3 >= 0) || (c1 <= 0 && c2 <= 0 && c3 <= 0);
-        d = (in ? -e : e) - s->r;
-        break;
-    }
-    }
-    return s->ring > 0 ? fabsf(d) - s->ring : d;
-}
-
-static float cover(float d) { return clampf(0.5f - d, 0, 1); }
 static void fill(Canvas *c, Shape s) {
     for (int y = 0; y < CELL; y++)
         for (int x = 0; x < CELL; x++) c->a[y * CELL + x] = maxf(c->a[y * CELL + x], cover(sd(&s, x + 0.5f, y + 0.5f)));
@@ -145,11 +109,6 @@ static void cut(Canvas *c, Shape s) {
     for (int y = 0; y < CELL; y++)
         for (int x = 0; x < CELL; x++) c->a[y * CELL + x] *= 1 - cover(sd(&s, x + 0.5f, y + 0.5f));
 }
-static Shape circle(float x, float y, float r) { return (Shape){SH_CIRCLE, {x, y}, r, 0}; }
-static Shape box(float x, float y, float hw, float hh, float r) { return (Shape){SH_BOX, {x, y, hw, hh}, r, 0}; }
-static Shape seg(float ax, float ay, float bx, float by, float r) { return (Shape){SH_SEG, {ax, ay, bx, by}, r, 0}; }
-static Shape tri(float ax, float ay, float bx, float by, float cx, float cy) { return (Shape){SH_TRI, {ax, ay, bx, by, cx, cy}, 0, 0}; }
-static Shape ring(Shape s, float t) { s.ring = t; return s; }
 
 // ---- text (Fira Sans SemiBold)
 static stbtt_fontinfo g_font;
