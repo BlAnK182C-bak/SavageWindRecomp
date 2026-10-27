@@ -948,6 +948,13 @@ static void hdr_make_images(uint32_t n, VkExtent2D ext) {
     hdr_count = n;
 }
 
+// The frame is drawn upright at the window's size. On a phone turned from its natural orientation currentTransform
+// is the turn, and a swapchain made with it is shown turned and stretched: identity has the compositor turn it.
+static VkSurfaceTransformFlagBitsKHR pre_transform(const VkSurfaceCapabilitiesKHR *caps) {
+    return caps->supportedTransforms & VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR ? VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR
+                                                                            : caps->currentTransform;
+}
+
 static void create_swapchain(void) {
     VkSurfaceCapabilitiesKHR caps;
     VK_CHECK(vkGetPhysicalDeviceSurfaceCapabilitiesKHR(g_vk.phys, g_vk.surface, &caps));
@@ -983,7 +990,7 @@ static void create_swapchain(void) {
         .sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR, .surface = g_vk.surface, .minImageCount = count,
         .imageFormat = sf.format, .imageColorSpace = sf.colorSpace, .imageExtent = ext, .imageArrayLayers = 1,
         .imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
-        .imageSharingMode = VK_SHARING_MODE_EXCLUSIVE, .preTransform = caps.currentTransform,
+        .imageSharingMode = VK_SHARING_MODE_EXCLUSIVE, .preTransform = pre_transform(&caps),
         .compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR, .presentMode = mode, .clipped = VK_TRUE,
         .oldSwapchain = old};
     // (what decides whether the display can follow the game: the window, the mode, the display's refresh rate)
@@ -1126,6 +1133,16 @@ static void *pt_waiter(void *arg) {
     }
 }
 
+// whether a present's result asks for a new swapchain. Android says suboptimal on every present while the phone is
+// turned and the swapchain isn't (pre_transform): a new size still shows as the window's (vk_frame_begin).
+static bool present_stale(VkResult r) {
+#ifdef __ANDROID__
+    return r == VK_ERROR_OUT_OF_DATE_KHR;
+#else
+    return r == VK_ERROR_OUT_OF_DATE_KHR || r == VK_SUBOPTIMAL_KHR;
+#endif
+}
+
 // vkQueuePresentKHR, timed and given a present id for the waiter when SAVAGEWIND_LOG_PRESENT asks
 static VkResult queue_present(VkQueue q, const VkPresentInfoKHR *info) {
     if (pt_every < 0) {
@@ -1232,8 +1249,8 @@ static void *present_thread(void *arg) {
         pthread_mutex_lock(&sc_lock);
         VkResult r = queue_present(g_vk.present_queue, &pi);
         pthread_mutex_unlock(&sc_lock);
-        if (r == VK_ERROR_OUT_OF_DATE_KHR || r == VK_SUBOPTIMAL_KHR) atomic_store(&pres_stale, 1);
-        else if (r != VK_SUCCESS) { static int n; if (n++ < 5) LOG("[vk] present failed: %d\n", r); }
+        if (present_stale(r)) atomic_store(&pres_stale, 1);
+        else if (r != VK_SUCCESS && r != VK_SUBOPTIMAL_KHR) { static int n; if (n++ < 5) LOG("[vk] present failed: %d\n", r); }
         pthread_mutex_lock(&pres_m);
         presq_head = (presq_head + 1) % PRES_Q;
         presq_n--;
@@ -1290,7 +1307,7 @@ static bool present_image(uint32_t img, VkSemaphore sem, int kind, uint64_t seq)
                                .swapchainCount = 1, .pSwapchains = &g_vk.swapchain, .pImageIndices = &img};
         present_wait_turn(kind, seq);
         VkResult r = queue_present(g_vk.queue, &pi);
-        return !(r == VK_ERROR_OUT_OF_DATE_KHR || r == VK_SUBOPTIMAL_KHR);
+        return !present_stale(r);
     }
     pthread_mutex_lock(&pres_m);
     while (presq_n == PRES_Q) pthread_cond_wait(&pres_cv, &pres_m);
@@ -1876,6 +1893,8 @@ void ui_window_init(void) {
     if (window) return;
     atexit(quick_exit_handler);
     SDL_SetHint(SDL_HINT_JOYSTICK_ALLOW_BACKGROUND_EVENTS, "1");
+    // (a resizable window is any orientation on Android: SDLActivity overrides the manifest's sensorLandscape)
+    SDL_SetHint(SDL_HINT_ORIENTATIONS, "LandscapeLeft LandscapeRight");
     settings_load();
     if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD)) FATAL("SDL_Init: %s\n", SDL_GetError());
     // Video > Window size (runtime/window_size.c: pixels; SDL's window size is pixels / the display's pixel density)

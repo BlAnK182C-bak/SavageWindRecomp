@@ -214,6 +214,9 @@ void winsize_apply(void *win) {
     first = false;
     winsize_refresh(w);
     bool fs = g_settings.fullscreen && !test;
+#ifdef __ANDROID__
+    fs = true;  // (a phone's window is the whole screen anyway; windowed only keeps the status and navigation bars)
+#endif
     WinSize s = winsize_effective(fs), desk = winsize_desktop(), virt = {0, 0};
     SDL_DisplayID d = SDL_GetDisplayForWindow(w);
     if (fs) {
