@@ -325,6 +325,14 @@ static int version_failure(const std::string &st) {
 // no game files yet: the page is the welcome then)
 static void explain_status(const std::string &st) {
     if (st.empty() || st == "No game files") return;
+#ifdef __ANDROID__  // (no Set up on a phone: it has no compiler)
+    if (!st.compare(0, 9, "Game code")) {
+        set_job(st == "Game code not built yet" ? "The game code isn't built yet" : "This game code is not for this app",
+                true, "Build it on a PC from your copy of the game with tools/android/gamelib.sh, from the same version "
+                      "of Savage Wind as this app, then copy swgame.so and swgame.so.id into the folder above.");
+        return;
+    }
+#endif
     if (st == "Game code built for another version")
         set_job("The game code was built for another version of Savage Wind", true,
                 "Savage Wind was updated: choose Set up game files to build the game code again from your copy of the "
