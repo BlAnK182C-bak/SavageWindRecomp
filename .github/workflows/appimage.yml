@@ -1,0 +1,26 @@
+# Fork test builds: a pushed tag builds the x86_64 AppImage (tools/linux/appimage.sh, Ubuntu 22.04 containers, podman)
+# and attaches it to a prerelease of that tag. No game code inside: the start screen builds it from the player's files.
+name: Linux AppImage
+
+on:
+  push:
+    tags: ['*']
+
+permissions:
+  contents: write
+
+jobs:
+  appimage:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@v4
+      - run: tools/linux/appimage.sh x86_64
+      - name: Prerelease
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          f="build/dist/Savage_Wind-$GITHUB_REF_NAME-x86_64.AppImage"
+          mv build/dist/Savage_Wind-*-x86_64.AppImage "$f"
+          gh release create "$GITHUB_REF_NAME" "$f" --repo "$GITHUB_REPOSITORY" --prerelease --title "$GITHUB_REF_NAME" \
+              --notes "Test build, not an official Savage Wind release: Revivedx/SavageWindRecomp \`test\` plus this fork's commits up to $GITHUB_SHA. Adds SAVAGEWIND_DUMP_TEX=1, which saves the game's textures to ~/.local/share/savagewind/tex_dump/ (never share those files publicly: they are Nintendo's)."
